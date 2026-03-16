@@ -20,7 +20,9 @@ export default function AgenceDetailPage() {
   useEffect(() => {
     if (!id) return;
     api.getAgence(id).then(setAgence).catch(console.error);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api.getAgenceAvis(id).then((d: any) => setAvis(d.items)).catch(console.error);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api.getAgenceOffres(id).then((d: any) => setOffres(d.items)).catch(console.error);
     api.getAgenceInsightsHistorique(id).then(setInsights).catch(console.error);
   }, [id]);
