@@ -4,15 +4,12 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Loader2, Square, Play } from "lucide-react";
+import { Loader2, Play, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ScrapingJob } from "@/lib/types";
 
 export default function ScrapingPage() {
   const [jobs, setJobs] = useState<ScrapingJob[]>([]);
-  const [cronExpression, setCronExpression] = useState("0 2 * * *");
   const [launching, setLaunching] = useState(false);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -23,21 +20,15 @@ export default function ScrapingPage() {
     api.getScrapingJobs().then((d: any) => setJobs(d.items)).catch(console.error);
   }, []);
 
-  // Poll every 3s when a job is running
-  useEffect(() => {
-    loadJobs();
-  }, [loadJobs]);
+  useEffect(() => { loadJobs(); }, [loadJobs]);
 
   useEffect(() => {
     if (hasRunningJob) {
       pollingRef.current = setInterval(loadJobs, 3000);
-    } else if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
+    } else {
+      if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     }
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-    };
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
   }, [hasRunningJob, loadJobs]);
 
   const handleLaunch = async () => {
@@ -50,37 +41,19 @@ export default function ScrapingPage() {
     }
   };
 
-  const handleStop = async (jobId: string) => {
-    await api.stopScraping(jobId);
-    loadJobs();
-  };
-
-  const handleStopAll = async () => {
-    const running = jobs.filter((j) => j.statut === "running" || j.statut === "pending");
-    await Promise.all(running.map((j) => api.stopScraping(j.id)));
-    loadJobs();
-  };
-
-  const handleCreateCron = async () => {
-    await api.createCron(cronExpression);
-    loadJobs();
-  };
-
-  const handleDeleteCron = async (id: string) => {
-    await api.deleteCron(id);
-    loadJobs();
-  };
-
   const getStatusBadge = (statut: string) => {
     const config: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
       done: { variant: "default", label: "Terminé" },
       running: { variant: "secondary", label: "En cours..." },
       pending: { variant: "outline", label: "En attente" },
-      failed: { variant: "destructive", label: "Arrêté" },
+      failed: { variant: "destructive", label: "Erreur" },
     };
     const c = config[statut] || { variant: "outline" as const, label: statut };
     return <Badge variant={c.variant}>{c.label}</Badge>;
   };
+
+  const lastJob = jobs.length > 0 ? jobs[0] : null;
+  const lastDoneJob = jobs.find((j) => j.statut === "done");
 
   return (
     <div className="space-y-6">
@@ -89,40 +62,21 @@ export default function ScrapingPage() {
           <h2 className="text-3xl font-bold tracking-tight">Scraping</h2>
           <p className="text-muted-foreground">
             {hasRunningJob
-              ? "Scraping en cours — les spiders parcourent internet..."
-              : "Lancer et planifier les scrappings"}
+              ? "Scraping en cours — collecte des agences, enrichissement RNIC, calcul des insights..."
+              : lastDoneJob
+                ? `Dernier scraping : ${new Date(lastDoneJob.created_at).toLocaleString("fr-FR")} — ${lastDoneJob.nb_agences_scrappees} agences`
+                : "Lancez un scraping pour collecter les données"}
           </p>
         </div>
-        <div className="flex gap-2">
-          {hasRunningJob ? (
-            <Button variant="destructive" onClick={handleStopAll}>
-              <Square className="mr-2 h-4 w-4" />
-              Arrêter le scrapping
-            </Button>
+        <Button onClick={handleLaunch} disabled={launching || hasRunningJob} size="lg">
+          {launching || hasRunningJob ? (
+            <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scraping en cours...</>
+          ) : lastDoneJob ? (
+            <><RefreshCw className="mr-2 h-4 w-4" />Relancer le scraping</>
           ) : (
-            <Button onClick={handleLaunch} disabled={launching}>
-              {launching ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Lancement...</>
-              ) : (
-                <><Play className="mr-2 h-4 w-4" />Lancer un scrapping</>
-              )}
-            </Button>
+            <><Play className="mr-2 h-4 w-4" />Lancer le scraping</>
           )}
-          <Dialog>
-            <DialogTrigger render={<Button variant="outline" />}>Planifier (cron)</DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>Nouvelle automatisation</DialogTitle></DialogHeader>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium">Expression cron</label>
-                  <Input value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 2 * * *" />
-                  <p className="text-xs text-muted-foreground mt-1">Exemple: &quot;0 2 * * *&quot; = tous les jours à 2h</p>
-                </div>
-                <Button onClick={handleCreateCron} className="w-full">Créer</Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
+        </Button>
       </div>
 
       {hasRunningJob && (
@@ -130,60 +84,70 @@ export default function ScrapingPage() {
           <CardContent className="flex items-center gap-3 pt-6">
             <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
             <div>
-              <p className="font-medium text-blue-900 dark:text-blue-100">Scraping en cours</p>
+              <p className="font-medium text-blue-900 dark:text-blue-100">Pipeline en cours</p>
               <p className="text-sm text-blue-700 dark:text-blue-300">
-                Les spiders parcourent les sites d&apos;agences, Google Reviews et Trustpilot...
+                1. Collecte des agences (API INSEE) → 2. Enrichissement RNIC (lots réels) → 3. Calcul des insights
               </p>
             </div>
           </CardContent>
         </Card>
       )}
 
+      {/* Stats from last completed job */}
+      {lastDoneJob && !hasRunningJob && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">Agences collectées</CardTitle></CardHeader>
+            <CardContent><div className="text-2xl font-bold">{lastDoneJob.nb_agences_scrappees}</div></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">Durée</CardTitle></CardHeader>
+            <CardContent><div className="text-2xl font-bold">
+              {lastDoneJob.started_at && lastDoneJob.finished_at
+                ? `${Math.round((new Date(lastDoneJob.finished_at).getTime() - new Date(lastDoneJob.started_at).getTime()) / 1000)}s`
+                : "—"}
+            </div></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">Statut</CardTitle></CardHeader>
+            <CardContent><div className="text-2xl font-bold text-green-600">Complet</div></CardContent>
+          </Card>
+        </div>
+      )}
+
       <Card>
-        <CardHeader><CardTitle>Historique des jobs</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Historique</CardTitle></CardHeader>
         <CardContent>
           <div className="rounded-md border">
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th className="p-3 text-left text-sm font-medium">Type</th>
                   <th className="p-3 text-left text-sm font-medium">Statut</th>
-                  <th className="p-3 text-left text-sm font-medium">Cron</th>
-                  <th className="p-3 text-left text-sm font-medium">Créé le</th>
+                  <th className="p-3 text-left text-sm font-medium">Date</th>
                   <th className="p-3 text-right text-sm font-medium">Agences</th>
-                  <th className="p-3 text-center text-sm font-medium">Actions</th>
+                  <th className="p-3 text-right text-sm font-medium">Durée</th>
                 </tr>
               </thead>
               <tbody>
                 {jobs.map((job) => (
                   <tr key={job.id} className="border-b">
-                    <td className="p-3 text-sm"><Badge variant="outline">{job.type}</Badge></td>
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        {(job.statut === "running" || job.statut === "pending") && (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        )}
+                        {(job.statut === "running" || job.statut === "pending") && <Loader2 className="h-3 w-3 animate-spin" />}
                         {getStatusBadge(job.statut)}
                       </div>
                     </td>
-                    <td className="p-3 text-sm font-mono">{job.cron_expression || "—"}</td>
                     <td className="p-3 text-sm">{new Date(job.created_at).toLocaleString("fr-FR")}</td>
                     <td className="p-3 text-right text-sm">{job.nb_agences_scrappees}</td>
-                    <td className="p-3 text-center">
-                      {(job.statut === "running" || job.statut === "pending") && (
-                        <Button variant="ghost" size="sm" className="text-red-500" onClick={() => handleStop(job.id)}>
-                          <Square className="mr-1 h-3 w-3" />
-                          Arrêter
-                        </Button>
-                      )}
-                      {job.type === "cron" && job.statut !== "running" && job.statut !== "pending" && (
-                        <Button variant="ghost" size="sm" className="text-red-500" onClick={() => handleDeleteCron(job.id)}>Supprimer</Button>
-                      )}
+                    <td className="p-3 text-right text-sm">
+                      {job.started_at && job.finished_at
+                        ? `${Math.round((new Date(job.finished_at).getTime() - new Date(job.started_at).getTime()) / 1000)}s`
+                        : "—"}
                     </td>
                   </tr>
                 ))}
                 {jobs.length === 0 && (
-                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">Aucun job</td></tr>
+                  <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">Aucun scraping effectué</td></tr>
                 )}
               </tbody>
             </table>

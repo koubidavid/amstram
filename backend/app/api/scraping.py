@@ -1,3 +1,5 @@
+"""Scraping API — one button does everything."""
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -7,50 +9,65 @@ from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal
 from app.db.deps import get_db
-from app.models.agence import Agence
-from app.models.insight import Insight
 from app.models.scraping_job import JobStatut, JobType, ScrapingJob
-from app.schemas.scraping_job import ScrapingJobCreate, ScrapingJobList, ScrapingJobRead
+from app.schemas.scraping_job import ScrapingJobList, ScrapingJobRead
 
 router = APIRouter(prefix="/api/scraping", tags=["scraping"])
 
+# Track running task so we can check status
+_running_task: asyncio.Task | None = None
+
+
+def _run_full_pipeline(job_id: str):
+    """Run the complete pipeline: collect + RNIC + insights."""
+    from app.services.scraping_service import run_scraping, _step_enrich_rnic, _step_generate_insights
+    from app.models.insight import Insight
+
+    db = SessionLocal()
+    try:
+        # Step 1: Collect from API + generate initial insights
+        run_scraping(db, job_id)
+
+        # Step 2: Enrich with RNIC (local file)
+        errors = []
+        db.query(Insight).delete()
+        db.commit()
+        _step_enrich_rnic(db, errors)
+
+        # Step 3: Recalculate insights with RNIC data
+        _step_generate_insights(db)
+
+        # Update job with final counts
+        from app.models.agence import Agence
+        job = db.get(ScrapingJob, uuid.UUID(job_id))
+        if job:
+            job.nb_agences_scrappees = db.query(Agence).count()
+            rnic_count = db.query(Agence).filter(Agence.nb_lots_geres.isnot(None)).count()
+            if errors:
+                job.erreurs = {"rnic_warnings": errors}
+            db.commit()
+    finally:
+        db.close()
+
 
 @router.post("/lancer", response_model=ScrapingJobRead)
-def lancer_scraping(db: Session = Depends(get_db)):
-    """Launch scraping synchronously (~20-30s). Collects agencies + computes insights."""
-    from app.services.scraping_service import run_scraping
+async def lancer_scraping(db: Session = Depends(get_db)):
+    """Launch full scraping pipeline in background.
+    Collects agencies + enriches with RNIC + computes insights."""
+    global _running_task
+
     job = ScrapingJob(type=JobType.manuel, statut=JobStatut.pending)
     db.add(job)
     db.commit()
     db.refresh(job)
 
-    run_scraping(db, str(job.id))
-    db.refresh(job)
+    job_id = str(job.id)
+
+    # Run in background via asyncio + thread executor
+    loop = asyncio.get_event_loop()
+    _running_task = loop.run_in_executor(None, _run_full_pipeline, job_id)
+
     return job
-
-
-@router.post("/enrich-rnic")
-def enrich_rnic(db: Session = Depends(get_db)):
-    """Enrich agencies with RNIC data. Parses local CSV (~60-90s for 626k rows)."""
-    from app.services.scraping_service import _step_enrich_rnic, _step_generate_insights
-    errors = []
-
-    db.query(Insight).delete()
-    db.commit()
-
-    matched = _step_enrich_rnic(db, errors)
-    _step_generate_insights(db)
-
-    total = db.query(Agence).count()
-    with_lots = db.query(Agence).filter(Agence.nb_lots_geres.isnot(None)).count()
-
-    return {
-        "status": "done",
-        "rnic_matched": matched,
-        "total_agences": total,
-        "agences_with_lots": with_lots,
-        "errors": errors if errors else None,
-    }
 
 
 @router.get("/jobs", response_model=ScrapingJobList)
@@ -81,24 +98,3 @@ def stop_scraping(job_id: uuid.UUID, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(job)
     return job
-
-
-@router.post("/cron", response_model=ScrapingJobRead)
-def create_cron(data: ScrapingJobCreate, db: Session = Depends(get_db)):
-    job = ScrapingJob(type=JobType.cron, cron_expression=data.cron_expression, statut=JobStatut.pending)
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    return job
-
-
-@router.delete("/cron/{job_id}")
-def delete_cron(job_id: uuid.UUID, db: Session = Depends(get_db)):
-    job = db.get(ScrapingJob, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.type != JobType.cron:
-        raise HTTPException(status_code=400, detail="Not a cron job")
-    db.delete(job)
-    db.commit()
-    return {"status": "deleted"}
