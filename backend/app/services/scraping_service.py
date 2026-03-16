@@ -1,7 +1,5 @@
-"""Scraping service — collects agencies, enriches with Google data, computes insights."""
+"""Scraping service — collects agencies from govt API, computes honest insights."""
 import logging
-import random
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -14,7 +12,6 @@ from app.models.agence_snapshot import AgenceSnapshot
 from app.models.avis import Avis
 from app.models.insight import Insight
 from app.models.offre import OffreEmploi
-from app.services.insight_calculator import InsightCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +57,9 @@ REGIONS = {
     "37": "Centre-Val de Loire", "45": "Centre-Val de Loire",
 }
 
-# Lots estimation based on employee count (industry average ~40-60 lots per employee)
-LOTS_PER_EMPLOYEE = 45
-
 
 def run_scraping(db: Session, job_id: str):
-    """Full scraping pipeline: collect → enrich → insights."""
+    """Full pipeline: collect → analyze → generate honest insights."""
     from app.models.scraping_job import ScrapingJob, JobStatut
 
     job = db.get(ScrapingJob, uuid.UUID(job_id))
@@ -76,14 +70,8 @@ def run_scraping(db: Session, job_id: str):
     errors = []
 
     try:
-        # Step 1: Collect agencies from government API
-        total_new, total_updated = _step_collect_agencies(db, errors)
-
-        # Step 2: Enrich with estimated data
-        _step_enrich_agencies(db)
-
-        # Step 3: Calculate insights for all agencies
-        _step_calculate_insights(db)
+        total_new, total_updated = _step_collect(db, errors)
+        _step_generate_insights(db)
 
         job.statut = JobStatut.done
         job.nb_agences_scrappees = total_new + total_updated
@@ -99,8 +87,9 @@ def run_scraping(db: Session, job_id: str):
     db.commit()
 
 
-def _step_collect_agencies(db: Session, errors: list) -> tuple[int, int]:
-    """Step 1: Fetch agencies from the government API."""
+# ─── Step 1: Collect from government API ──────────────────────────────────────
+
+def _step_collect(db: Session, errors: list) -> tuple[int, int]:
     total_new = 0
     total_updated = 0
 
@@ -109,9 +98,7 @@ def _step_collect_agencies(db: Session, errors: list) -> tuple[int, int]:
             for page in range(1, 6):
                 try:
                     resp = client.get(GOV_API, params={
-                        "q": term,
-                        "page": page,
-                        "per_page": 25,
+                        "q": term, "page": page, "per_page": 25,
                         "activite_principale": "68.32A,68.31Z",
                         "etat_administratif": "A",
                     })
@@ -135,106 +122,141 @@ def _step_collect_agencies(db: Session, errors: list) -> tuple[int, int]:
     return total_new, total_updated
 
 
-def _step_enrich_agencies(db: Session):
-    """Step 2: Enrich agencies with estimated data (lots, scores)."""
+# ─── Step 2: Generate HONEST insights ────────────────────────────────────────
+
+def _step_generate_insights(db: Session):
+    """Generate insights based ONLY on verified data. Flag missing info."""
     agences = db.query(Agence).all()
 
     for agence in agences:
-        # Estimate nb_lots from nb_collaborateurs if unknown
-        if agence.nb_lots_geres is None and agence.nb_collaborateurs:
-            agence.nb_lots_geres = agence.nb_collaborateurs * LOTS_PER_EMPLOYEE
+        # Collect what we KNOW
+        known = {}
+        missing = []
 
-        # Simulate Google rating based on available signals
-        # (In production, you'd scrape Google Maps here)
-        if agence.note_google is None:
-            # Assign realistic ratings: most agencies are between 2.5 and 4.5
-            base = 3.5
-            # Larger agencies tend to have lower ratings (more complaints)
-            if agence.nb_collaborateurs and agence.nb_collaborateurs > 50:
-                base -= 0.5
-            elif agence.nb_collaborateurs and agence.nb_collaborateurs < 5:
-                base += 0.3
-            # Add some variance
-            agence.note_google = round(base + random.uniform(-0.8, 0.8), 1)
-            agence.note_google = max(1.0, min(5.0, agence.note_google))
-            agence.nb_avis_google = random.randint(5, 150)
+        # From government API (verified)
+        if agence.nb_collaborateurs is not None:
+            known["nb_collaborateurs"] = agence.nb_collaborateurs
+        else:
+            missing.append("Nombre de collaborateurs (non disponible via l'API INSEE)")
 
-        # Detect service travaux from name
+        if agence.nb_lots_geres is not None:
+            known["nb_lots_geres"] = agence.nb_lots_geres
+        else:
+            missing.append("Nombre de lots gérés (à vérifier sur le site de l'agence ou en rdv)")
+
+        # Google reviews (not scraped yet)
+        if agence.note_google is not None:
+            known["note_google"] = agence.note_google
+        else:
+            missing.append("Note Google (à vérifier manuellement sur Google Maps)")
+
+        # Trustpilot (not scraped yet)
+        if agence.note_trustpilot is not None:
+            known["note_trustpilot"] = agence.note_trustpilot
+        else:
+            missing.append("Note Trustpilot (à vérifier sur trustpilot.com)")
+
+        # Service travaux detection
         nom_lower = agence.nom.lower()
-        if any(kw in nom_lower for kw in ["travaux", "rénovation", "maintenance", "entretien"]):
-            agence.a_service_travaux = True
+        has_travaux_in_name = any(kw in nom_lower for kw in ["travaux", "rénovation", "maintenance"])
+        if has_travaux_in_name:
+            known["service_travaux_detecte"] = True
+        else:
+            missing.append("Présence d'un service travaux (à vérifier sur leur site web ou en rdv)")
 
-    db.commit()
-
-
-def _step_calculate_insights(db: Session):
-    """Step 3: Calculate insight scores for all agencies."""
-    calc = InsightCalculator()
-    twelve_months_ago = datetime.now(timezone.utc) - timedelta(days=365)
-    agences = db.query(Agence).all()
-
-    for agence in agences:
-        # Signal 1: ratio lots/collab
-        nb_lots = agence.nb_lots_geres
-        nb_collab = agence.nb_collaborateurs
-
-        # Signal 2: avis negatifs
-        total_avis_negatifs = db.query(func.count(Avis.id)).filter(
-            Avis.agence_id == agence.id, Avis.note < 3
+        # Offres d'emploi
+        nb_offres = db.query(func.count(OffreEmploi.id)).filter(
+            OffreEmploi.agence_id == agence.id
         ).scalar() or 0
-        avis_mentionnant_travaux = db.query(func.count(Avis.id)).filter(
-            Avis.agence_id == agence.id, Avis.note < 3, Avis.mentionne_travaux == True
+        if nb_offres > 0:
+            known["offres_emploi"] = nb_offres
+        else:
+            missing.append("Offres d'emploi (à vérifier sur leur site carrières)")
+
+        # Avis
+        nb_avis = db.query(func.count(Avis.id)).filter(
+            Avis.agence_id == agence.id
         ).scalar() or 0
 
-        # Signal 3: turnover
-        nb_offres_12_mois = db.query(func.count(OffreEmploi.id)).filter(
-            OffreEmploi.agence_id == agence.id,
-            OffreEmploi.date_scrappee >= twelve_months_ago,
-        ).scalar() or 0
+        # ── Calculate score based ONLY on what we know ──
+        score = 0
+        signaux = {}
+        details = []
 
-        # Signal 4: croissance parc
-        snapshots = (
-            db.query(AgenceSnapshot)
-            .filter(AgenceSnapshot.agence_id == agence.id)
-            .order_by(AgenceSnapshot.created_at.desc())
-            .limit(2)
-            .all()
-        )
-        current_lots = snapshots[0].nb_lots_geres if len(snapshots) > 0 else None
-        previous_lots = snapshots[1].nb_lots_geres if len(snapshots) > 1 else None
+        # Signal: Taille de l'agence (source: API INSEE — fiable)
+        if agence.nb_collaborateurs is not None:
+            if agence.nb_collaborateurs >= 5:
+                score += 15
+                signaux["taille_agence"] = 15
+                details.append(f"✓ Agence de taille significative ({agence.nb_collaborateurs} salariés) — plus susceptible d'avoir besoin d'aide travaux")
+            elif agence.nb_collaborateurs >= 1:
+                score += 5
+                signaux["taille_agence"] = 5
+                details.append(f"✓ Petite structure ({agence.nb_collaborateurs} salarié(s)) — potentiellement débordée")
 
-        # Signal 5: service travaux
-        has_service = agence.a_service_travaux
+        # Signal: Pas de service travaux détecté dans le nom
+        if not has_travaux_in_name:
+            score += 10
+            signaux["absence_service_travaux"] = 10
+            details.append("✓ Pas de mention 'travaux/maintenance' dans le nom — probablement pas de service dédié (à confirmer)")
+        else:
+            signaux["absence_service_travaux"] = 0
+            details.append("✗ Mention travaux/maintenance dans le nom — pourrait avoir un service dédié")
 
-        result = calc.calculate(
-            nb_lots=nb_lots,
-            nb_collab=nb_collab,
-            total_avis_negatifs=total_avis_negatifs,
-            avis_mentionnant_travaux=avis_mentionnant_travaux,
-            nb_offres_12_mois=nb_offres_12_mois,
-            previous_lots=previous_lots,
-            current_lots=current_lots,
-            has_service_travaux=has_service,
-        )
+        # Signal: Groupe connu = structure plus complexe = plus de besoins
+        if agence.groupe:
+            score += 5
+            signaux["appartenance_groupe"] = 5
+            details.append(f"✓ Fait partie du groupe {agence.groupe} — structures de groupe ont souvent des besoins en sous-traitance travaux")
 
+        # Signal: Activité vérifiée (code NAF 68.32A = administration d'immeubles)
+        score += 10
+        signaux["activite_verifiee"] = 10
+        details.append("✓ Activité vérifiée : administration d'immeubles / agence immobilière (source: INSEE)")
+
+        # Completeness penalty: less data = lower confidence
+        completeness = len(known) / (len(known) + len(missing)) if (known or missing) else 0
+        signaux["completude_donnees"] = round(completeness * 100)
+
+        # Generate recommendation
+        if score >= 30:
+            recommandation = "Cible potentielle — à investiguer"
+        elif score >= 20:
+            recommandation = "Profil intéressant — données complémentaires nécessaires"
+        else:
+            recommandation = "Données insuffisantes — investigation manuelle requise"
+
+        # Build full insight
         insight = Insight(
             agence_id=agence.id,
-            score_besoin=result["score_besoin"],
-            signaux=result["signaux"],
-            ratio_lots_collab=result["ratio_lots_collab"],
-            turnover_score=result["turnover_score"],
-            avis_negatifs_travaux=result["avis_negatifs_travaux"],
-            croissance_parc=result["croissance_parc"],
-            has_service_travaux=result["has_service_travaux"],
-            recommandation=result["recommandation"],
+            score_besoin=score,
+            signaux={
+                "scores": signaux,
+                "details": details,
+                "donnees_verifiees": list(known.keys()),
+                "donnees_manquantes": missing,
+                "source": "API INSEE / recherche-entreprises.api.gouv.fr",
+                "fiabilite": f"{signaux['completude_donnees']}% des données disponibles",
+            },
+            ratio_lots_collab=(
+                agence.nb_lots_geres / agence.nb_collaborateurs
+                if agence.nb_lots_geres and agence.nb_collaborateurs
+                else None
+            ),
+            turnover_score=float(nb_offres),
+            avis_negatifs_travaux=0,
+            croissance_parc=None,
+            has_service_travaux=has_travaux_in_name,
+            recommandation=recommandation,
         )
         db.add(insight)
 
     db.commit()
 
 
+# ─── Upsert agence ───────────────────────────────────────────────────────────
+
 def _upsert_agence(db: Session, entry: dict) -> tuple[int, int]:
-    """Insert or update an agency. Returns (new_count, updated_count)."""
     nom = entry.get("nom_complet", "")
     if not nom or len(nom) < 3:
         return 0, 0
@@ -259,8 +281,7 @@ def _upsert_agence(db: Session, entry: dict) -> tuple[int, int]:
     nb_collab = EMPLOYEE_RANGES.get(tranche)
 
     existing = db.query(Agence).filter(
-        Agence.nom == nom.title(),
-        Agence.code_postal == code_postal,
+        Agence.nom == nom.title(), Agence.code_postal == code_postal,
     ).first()
 
     if existing:
@@ -270,36 +291,26 @@ def _upsert_agence(db: Session, entry: dict) -> tuple[int, int]:
         if groupe:
             existing.groupe = groupe
         snapshot = AgenceSnapshot(
-            agence_id=existing.id,
-            nb_lots_geres=existing.nb_lots_geres,
+            agence_id=existing.id, nb_lots_geres=existing.nb_lots_geres,
             nb_collaborateurs=existing.nb_collaborateurs,
             a_service_travaux=existing.a_service_travaux,
-            note_google=existing.note_google,
-            note_trustpilot=existing.note_trustpilot,
+            note_google=existing.note_google, note_trustpilot=existing.note_trustpilot,
         )
         db.add(snapshot)
         return 0, 1
     else:
         agence = Agence(
-            nom=nom.title(),
-            groupe=groupe,
-            adresse=adresse,
-            ville=ville.title() if ville else "",
-            region=region,
-            code_postal=code_postal,
-            site_web="",
-            nb_lots_geres=None,
-            nb_collaborateurs=nb_collab,
-            a_service_travaux=False,
-            derniere_maj=datetime.now(timezone.utc),
+            nom=nom.title(), groupe=groupe, adresse=adresse,
+            ville=ville.title() if ville else "", region=region,
+            code_postal=code_postal, site_web="",
+            nb_lots_geres=None, nb_collaborateurs=nb_collab,
+            a_service_travaux=False, derniere_maj=datetime.now(timezone.utc),
         )
         db.add(agence)
         db.flush()
         snapshot = AgenceSnapshot(
-            agence_id=agence.id,
-            nb_lots_geres=None,
-            nb_collaborateurs=nb_collab,
-            a_service_travaux=False,
+            agence_id=agence.id, nb_lots_geres=None,
+            nb_collaborateurs=nb_collab, a_service_travaux=False,
         )
         db.add(snapshot)
         return 1, 0
