@@ -1,6 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.db.database import Base, engine
+from app.models import *  # noqa: F401,F403 — import all models so Base.metadata knows about them
+
+# Create all tables on startup
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(title="Amstram — Opportunity Finder API", version="1.0.0")
 
 app.add_middleware(
