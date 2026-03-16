@@ -60,7 +60,7 @@ export default function ScrapingPage() {
             {launching ? "Lancement..." : "Lancer un scrapping"}
           </Button>
           <Dialog>
-            <DialogTrigger><Button variant="outline">Planifier (cron)</Button></DialogTrigger>
+            <DialogTrigger render={<Button variant="outline" />}>Planifier (cron)</DialogTrigger>
             <DialogContent>
               <DialogHeader><DialogTitle>Nouvelle automatisation</DialogTitle></DialogHeader>
               <div className="space-y-4">

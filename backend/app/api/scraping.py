@@ -17,6 +17,16 @@ def lancer_scraping(db: Session = Depends(get_db)):
     db.add(job)
     db.commit()
     db.refresh(job)
+
+    # Trigger Celery task
+    try:
+        from celery import Celery
+        import os
+        celery_app = Celery("amstram", broker=os.getenv("REDIS_URL", "redis://redis:6379/0"))
+        celery_app.send_task("tasks.run_full_scraping", args=[str(job.id)])
+    except Exception:
+        pass  # Celery may not be available in dev/test
+
     return job
 
 
