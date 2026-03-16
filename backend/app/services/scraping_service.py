@@ -197,7 +197,14 @@ def _step_enrich_rnic(db: Session, errors: list) -> int:
 
     our_sirens = {a.siren: a for a in agences}
 
-    rnic_path = "/app/data/rnic.csv"
+    # Try multiple paths (Docker local vs cloud)
+    for p in ["/app/data/rnic.csv", "data/rnic.csv", os.path.join(os.path.dirname(__file__), "../../data/rnic.csv")]:
+        if os.path.exists(p):
+            rnic_path = p
+            break
+    else:
+        rnic_path = "data/rnic.csv"
+
     if not os.path.exists(rnic_path):
         errors.append("RNIC: fichier /app/data/rnic.csv non trouvé. Téléchargez-le d'abord.")
         return 0
