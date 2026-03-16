@@ -12,7 +12,10 @@ class Agence(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     nom: Mapped[str] = mapped_column(String(255))
+    siren: Mapped[str | None] = mapped_column(String(9))
     groupe: Mapped[str | None] = mapped_column(String(255))
+    nb_coproprietes: Mapped[int | None] = mapped_column(Integer)
+    nb_arretes_peril: Mapped[int | None] = mapped_column(Integer)
     adresse: Mapped[str | None] = mapped_column(String(500))
     ville: Mapped[str | None] = mapped_column(String(100))
     region: Mapped[str | None] = mapped_column(String(100))

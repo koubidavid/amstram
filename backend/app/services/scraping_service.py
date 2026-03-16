@@ -1,6 +1,9 @@
-"""Scraping service — collects agencies from govt API, computes honest insights."""
+"""Scraping service — collects agencies from govt API, enriches with RNIC, computes insights."""
+import csv
+import io
 import logging
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -70,7 +73,14 @@ def run_scraping(db: Session, job_id: str):
     errors = []
 
     try:
+        # Step 1: Collect agencies from government API
         total_new, total_updated = _step_collect(db, errors)
+
+        # Step 2: Enrich with RNIC (if file is available and small enough)
+        # Note: RNIC enrichment is done separately via POST /api/scraping/enrich-rnic
+        # because the 458MB file takes too long to parse in the main scraping thread
+
+        # Step 3: Generate honest insights
         _step_generate_insights(db)
 
         job.statut = JobStatut.done
@@ -122,7 +132,98 @@ def _step_collect(db: Session, errors: list) -> tuple[int, int]:
     return total_new, total_updated
 
 
-# ─── Step 2: Generate HONEST insights ────────────────────────────────────────
+# ─── Step 2: Enrich with RNIC (Registre National des Copropriétés) ───────────
+
+RNIC_CSV_URL = "https://static.data.gouv.fr/resources/registre-national-dimmatriculation-des-coproprietes/20260105-114009/rnc-data-gouv-with-qpv.csv"
+
+
+def _step_enrich_rnic(db: Session, errors: list) -> int:
+    """Parse local RNIC CSV file, match by SIREN, enrich agences with real lot counts.
+
+    The RNIC file must be pre-downloaded to /app/data/rnic.csv (437 MB).
+    Download command: curl -L -o backend/data/rnic.csv "https://static.data.gouv.fr/resources/registre-national-dimmatriculation-des-coproprietes/20260105-114009/rnc-data-gouv-with-qpv.csv"
+    """
+    import os
+
+    agences = db.query(Agence).filter(Agence.siren.isnot(None), Agence.siren != "").all()
+    if not agences:
+        errors.append("RNIC: no agences with SIREN, skipping")
+        return 0
+
+    our_sirens = {a.siren: a for a in agences}
+
+    rnic_path = "/app/data/rnic.csv"
+    if not os.path.exists(rnic_path):
+        errors.append("RNIC: fichier /app/data/rnic.csv non trouvé. Téléchargez-le d'abord.")
+        return 0
+
+    # Parse — only process rows matching our SIRENs (fast: skips 99%+ of rows)
+    siren_data = defaultdict(lambda: {"nb_copros": 0, "total_lots": 0, "nb_arretes_peril": 0})
+
+    try:
+        with open(rnic_path, "r", encoding="utf-8", errors="replace") as f:
+            # Read header to find column indices (fast: no DictReader overhead)
+            header = f.readline().strip().split(",")
+            col_map = {name.strip().strip('"').lower(): i for i, name in enumerate(header)}
+
+            idx_siret = col_map.get("siret_du_representant_legal", -1)
+            idx_lots = col_map.get("nombre_total_de_lots_a_usage_d_habitation_de_bureaux_ou_de_comm", -1)
+            idx_arretes = col_map.get("nombre_d_arretes_de_peril", -1)
+
+            if idx_siret < 0:
+                errors.append(f"RNIC: SIRET column not found. Available: {list(col_map.keys())[:10]}")
+                return 0
+
+            max_idx = max(idx_siret, idx_lots, idx_arretes)
+
+            for line in f:
+                # Fast: split only what we need, skip most lines early
+                parts = line.split(",")
+                if len(parts) <= max_idx:
+                    continue
+
+                siret_val = parts[idx_siret].strip().strip('"')
+                siren = siret_val[:9]
+                if len(siren) < 9 or siren not in our_sirens:
+                    continue
+
+                lots = _safe_int(parts[idx_lots]) if idx_lots >= 0 else 0
+                arretes = _safe_int(parts[idx_arretes]) if idx_arretes >= 0 else 0
+
+                d = siren_data[siren]
+                d["nb_copros"] += 1
+                d["total_lots"] += lots
+                d["nb_arretes_peril"] += arretes
+
+    except Exception as e:
+        errors.append(f"RNIC parse failed: {str(e)[:100]}")
+        return 0
+
+    # Apply to our agences
+    matched = 0
+    for siren, data in siren_data.items():
+        agence = our_sirens.get(siren)
+        if agence and data["total_lots"] > 0:
+            agence.nb_lots_geres = data["total_lots"]
+            agence.nb_coproprietes = data["nb_copros"]
+            agence.nb_arretes_peril = data["nb_arretes_peril"]
+            matched += 1
+
+    db.commit()
+    return matched
+
+
+def _safe_int(val) -> int:
+    """Safely convert a value to int, returning 0 on failure."""
+    if val is None:
+        return 0
+    try:
+        return int(str(val).strip().replace(" ", ""))
+    except (ValueError, TypeError):
+        return 0
+
+
+# ─── Step 3: Generate HONEST insights ────────────────────────────────────────
 
 def _step_generate_insights(db: Session):
     """Generate insights based ONLY on verified data. Flag missing info."""
@@ -141,8 +242,9 @@ def _step_generate_insights(db: Session):
 
         if agence.nb_lots_geres is not None:
             known["nb_lots_geres"] = agence.nb_lots_geres
+            known["source_lots"] = "RNIC (Registre National des Copropriétés)"
         else:
-            missing.append("Nombre de lots gérés (à vérifier sur le site de l'agence ou en rdv)")
+            missing.append("Nombre de lots gérés (non trouvé dans le RNIC — vérifier sur le site ou en rdv)")
 
         # Google reviews (not scraped yet)
         if agence.note_google is not None:
@@ -214,12 +316,62 @@ def _step_generate_insights(db: Session):
         signaux["activite_verifiee"] = 10
         details.append("✓ Activité vérifiée : administration d'immeubles / agence immobilière (source: INSEE)")
 
-        # Completeness penalty: less data = lower confidence
+        # Signal: Volume de lots gérés (source: RNIC — très fiable)
+        if agence.nb_lots_geres is not None:
+            if agence.nb_lots_geres >= 500:
+                score += 25
+                signaux["volume_lots_rnic"] = 25
+                details.append(f"✓ Gère {agence.nb_lots_geres} lots (source: RNIC) — volume très important, fort besoin potentiel en gestion de travaux")
+            elif agence.nb_lots_geres >= 100:
+                score += 20
+                signaux["volume_lots_rnic"] = 20
+                details.append(f"✓ Gère {agence.nb_lots_geres} lots (source: RNIC) — volume significatif de travaux à gérer")
+            elif agence.nb_lots_geres >= 30:
+                score += 10
+                signaux["volume_lots_rnic"] = 10
+                details.append(f"✓ Gère {agence.nb_lots_geres} lots (source: RNIC) — volume modéré")
+            else:
+                signaux["volume_lots_rnic"] = 0
+                details.append(f"○ Gère seulement {agence.nb_lots_geres} lots (source: RNIC) — petit portefeuille")
+
+        # Signal: Ratio lots/collaborateurs (si les deux données sont dispo)
+        if agence.nb_lots_geres and agence.nb_collaborateurs and agence.nb_collaborateurs > 0:
+            ratio = agence.nb_lots_geres / agence.nb_collaborateurs
+            if ratio >= 80:
+                score += 15
+                signaux["ratio_lots_collab"] = 15
+                details.append(f"✓ Ratio {ratio:.0f} lots/collaborateur (sources: RNIC+INSEE) — équipe potentiellement surchargée, besoin d'externalisation")
+            elif ratio >= 50:
+                score += 10
+                signaux["ratio_lots_collab"] = 10
+                details.append(f"✓ Ratio {ratio:.0f} lots/collaborateur (sources: RNIC+INSEE) — charge élevée")
+            else:
+                signaux["ratio_lots_collab"] = 0
+                details.append(f"○ Ratio {ratio:.0f} lots/collaborateur (sources: RNIC+INSEE) — charge raisonnable")
+
+        # Signal: Copropriétés en difficulté (arrêtés de péril — source RNIC)
+        if agence.nb_arretes_peril and agence.nb_arretes_peril > 0:
+            score += 15
+            signaux["copros_en_difficulte"] = 15
+            details.append(f"✓ {agence.nb_arretes_peril} arrêté(s) de péril dans son portefeuille (source: RNIC) — besoin urgent de suivi travaux")
+            known["arretes_peril"] = agence.nb_arretes_peril
+
+        # Signal: Nombre de copropriétés gérées (source RNIC)
+        if agence.nb_coproprietes and agence.nb_coproprietes > 0:
+            known["nb_coproprietes"] = agence.nb_coproprietes
+            if agence.nb_coproprietes >= 50:
+                score += 10
+                signaux["nb_coproprietes"] = 10
+                details.append(f"✓ Gère {agence.nb_coproprietes} copropriétés (source: RNIC) — portefeuille important")
+
+        # Completeness score
         completeness = len(known) / (len(known) + len(missing)) if (known or missing) else 0
         signaux["completude_donnees"] = round(completeness * 100)
 
         # Generate recommendation
-        if score >= 30:
+        if score >= 50:
+            recommandation = "Cible prioritaire — fort potentiel pour Monga"
+        elif score >= 35:
             recommandation = "Cible potentielle — à investiguer"
         elif score >= 20:
             recommandation = "Profil intéressant — données complémentaires nécessaires"
@@ -235,7 +387,7 @@ def _step_generate_insights(db: Session):
                 "details": details,
                 "donnees_verifiees": list(known.keys()),
                 "donnees_manquantes": missing,
-                "source": "API INSEE / recherche-entreprises.api.gouv.fr",
+                "source": "API INSEE + RNIC (Registre National des Copropriétés)",
                 "fiabilite": f"{signaux['completude_donnees']}% des données disponibles",
             },
             ratio_lots_collab=(
@@ -280,6 +432,9 @@ def _upsert_agence(db: Session, entry: dict) -> tuple[int, int]:
     tranche = entry.get("tranche_effectif_salarie", "") or siege.get("tranche_effectif_salarie", "")
     nb_collab = EMPLOYEE_RANGES.get(tranche)
 
+    # Get SIREN from the API response
+    siren = entry.get("siren", "")
+
     existing = db.query(Agence).filter(
         Agence.nom == nom.title(), Agence.code_postal == code_postal,
     ).first()
@@ -290,6 +445,8 @@ def _upsert_agence(db: Session, entry: dict) -> tuple[int, int]:
             existing.nb_collaborateurs = nb_collab
         if groupe:
             existing.groupe = groupe
+        if siren:
+            existing.siren = siren
         snapshot = AgenceSnapshot(
             agence_id=existing.id, nb_lots_geres=existing.nb_lots_geres,
             nb_collaborateurs=existing.nb_collaborateurs,
@@ -300,7 +457,7 @@ def _upsert_agence(db: Session, entry: dict) -> tuple[int, int]:
         return 0, 1
     else:
         agence = Agence(
-            nom=nom.title(), groupe=groupe, adresse=adresse,
+            nom=nom.title(), siren=siren, groupe=groupe, adresse=adresse,
             ville=ville.title() if ville else "", region=region,
             code_postal=code_postal, site_web="",
             nb_lots_geres=None, nb_collaborateurs=nb_collab,
