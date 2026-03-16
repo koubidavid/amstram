@@ -73,10 +73,23 @@ export default function AgencesPage() {
       </div>
 
       {data && data.pages > 1 && (
-        <div className="flex justify-center gap-2">
-          <Button variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>Précédent</Button>
-          <span className="flex items-center px-3 text-sm">Page {page} / {data.pages}</span>
-          <Button variant="outline" disabled={page >= data.pages} onClick={() => setPage(page + 1)}>Suivant</Button>
+        <div className="flex justify-center items-center gap-1">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>←</Button>
+          {Array.from({ length: data.pages }, (_, i) => i + 1)
+            .filter((p) => p === 1 || p === data.pages || Math.abs(p - page) <= 2)
+            .reduce<(number | string)[]>((acc, p, i, arr) => {
+              if (i > 0 && p - (arr[i - 1] as number) > 1) acc.push("...");
+              acc.push(p);
+              return acc;
+            }, [])
+            .map((p, i) =>
+              p === "..." ? (
+                <span key={`dots-${i}`} className="px-2 text-sm text-muted-foreground">...</span>
+              ) : (
+                <Button key={p} variant={p === page ? "default" : "outline"} size="sm" className="w-9" onClick={() => setPage(p as number)}>{p}</Button>
+              )
+            )}
+          <Button variant="outline" size="sm" disabled={page >= data.pages} onClick={() => setPage(page + 1)}>→</Button>
         </div>
       )}
     </div>
