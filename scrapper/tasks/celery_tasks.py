@@ -1,6 +1,9 @@
+import json
 import os
+import subprocess
+import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,9 +19,24 @@ def get_db_session():
     return Session()
 
 
-@app.task(name="tasks.run_full_scraping")
-def run_full_scraping(job_id: str | None = None):
-    import sys
+def run_spider_subprocess(spider_name: str, extra_args: list[str] | None = None):
+    """Run a scrapy spider in a subprocess to avoid Twisted reactor conflicts."""
+    cmd = ["scrapy", "crawl", spider_name, "-s", "LOG_LEVEL=INFO"]
+    if extra_args:
+        cmd.extend(extra_args)
+    result = subprocess.run(
+        cmd,
+        cwd="/app/scrapper" if os.path.exists("/app/scrapper") else os.path.join(os.path.dirname(__file__), ".."),
+        capture_output=True,
+        text=True,
+        timeout=3600,  # 1 hour max
+        env={**os.environ, "PYTHONPATH": "/app:/backend"},
+    )
+    return result
+
+
+@app.task(name="tasks.run_full_scraping", bind=True)
+def run_full_scraping(self, job_id: str | None = None):
     sys.path.insert(0, "/backend")
     from app.models.scraping_job import ScrapingJob, JobStatut
 
@@ -33,25 +51,58 @@ def run_full_scraping(job_id: str | None = None):
         job_id = str(job.id)
 
     job.statut = JobStatut.running
-    job.started_at = datetime.utcnow()
+    job.started_at = datetime.now(timezone.utc)
     session.commit()
 
-    try:
-        from scrapy.crawler import CrawlerProcess
-        from scrapy.utils.project import get_project_settings
+    errors = []
+    total_agences = 0
 
-        process = CrawlerProcess(get_project_settings())
-        process.crawl("agence_info")
-        process.crawl("offre_emploi")
-        process.crawl("google_reviews")
-        process.crawl("trustpilot")
-        process.start()
+    try:
+        # Spider 1: Scrape agency info from PagesJaunes
+        self.update_state(state="PROGRESS", meta={"step": "agence_info"})
+        result = run_spider_subprocess("agence_info")
+        if result.returncode != 0:
+            errors.append({"spider": "agence_info", "stderr": result.stderr[-500:] if result.stderr else ""})
+
+        # Count how many agences we have now
+        from app.models.agence import Agence
+        total_agences = session.query(Agence).count()
+
+        # Spider 2: Scrape job offers from agency websites
+        if total_agences > 0:
+            self.update_state(state="PROGRESS", meta={"step": "offre_emploi"})
+            result = run_spider_subprocess("offre_emploi")
+            if result.returncode != 0:
+                errors.append({"spider": "offre_emploi", "stderr": result.stderr[-500:] if result.stderr else ""})
+
+        # Spider 3: Google Reviews
+        if total_agences > 0:
+            self.update_state(state="PROGRESS", meta={"step": "google_reviews"})
+            result = run_spider_subprocess("google_reviews")
+            if result.returncode != 0:
+                errors.append({"spider": "google_reviews", "stderr": result.stderr[-500:] if result.stderr else ""})
+
+        # Spider 4: Trustpilot
+        if total_agences > 0:
+            self.update_state(state="PROGRESS", meta={"step": "trustpilot"})
+            result = run_spider_subprocess("trustpilot")
+            if result.returncode != 0:
+                errors.append({"spider": "trustpilot", "stderr": result.stderr[-500:] if result.stderr else ""})
+
+        # Calculate insights
+        if total_agences > 0:
+            self.update_state(state="PROGRESS", meta={"step": "insights"})
+            calculate_all_insights()
 
         job.statut = JobStatut.done
-        job.finished_at = datetime.utcnow()
+        job.finished_at = datetime.now(timezone.utc)
+        job.nb_agences_scrappees = total_agences
+        if errors:
+            job.erreurs = {"spider_errors": errors}
+
     except Exception as e:
         job.statut = JobStatut.failed
-        job.finished_at = datetime.utcnow()
+        job.finished_at = datetime.now(timezone.utc)
         job.erreurs = {"error": str(e)}
     finally:
         session.commit()
@@ -62,17 +113,11 @@ def run_full_scraping(job_id: str | None = None):
 
 @app.task(name="tasks.run_spider")
 def run_spider(spider_name: str):
-    from scrapy.crawler import CrawlerProcess
-    from scrapy.utils.project import get_project_settings
-
-    process = CrawlerProcess(get_project_settings())
-    process.crawl(spider_name)
-    process.start()
+    run_spider_subprocess(spider_name)
 
 
 @app.task(name="tasks.calculate_all_insights")
 def calculate_all_insights():
-    import sys
     sys.path.insert(0, "/backend")
     from datetime import timedelta
     from sqlalchemy import func
@@ -86,7 +131,7 @@ def calculate_all_insights():
 
     session = get_db_session()
     calc = InsightCalculator()
-    twelve_months_ago = datetime.utcnow() - timedelta(days=365)
+    twelve_months_ago = datetime.now(timezone.utc) - timedelta(days=365)
 
     agences = session.query(Agence).all()
     for agence in agences:
