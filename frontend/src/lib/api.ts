@@ -19,6 +19,7 @@ export const api = {
   getAgenceSnapshots: (id: string) => fetchApi<any>(`/api/agences/${id}/snapshots`),
   getOffres: (params?: string) => fetchApi<any>(`/api/offres?${params || ""}`),
   getInsights: (params?: string) => fetchApi<any>(`/api/insights?${params || ""}`),
+  calculateInsights: () => fetchApi<any>("/api/insights/calculate", { method: "POST" }),
   lancerScraping: () => fetchApi<any>("/api/scraping/lancer", { method: "POST" }),
   getScrapingJobs: () => fetchApi<any>("/api/scraping/jobs"),
   createCron: (cron: string) => fetchApi<any>("/api/scraping/cron", { method: "POST", body: JSON.stringify({ cron_expression: cron }) }),

@@ -11,11 +11,9 @@ import {
 } from "lucide-react";
 
 const navigation = [
-  { name: "Vue d'ensemble", href: "/", icon: LayoutDashboard },
+  { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Agences", href: "/agences", icon: Building2 },
-  { name: "Offres d'emploi", href: "/offres", icon: BriefcaseBusiness },
   { name: "Insights", href: "/insights", icon: Brain },
-  { name: "Scraping", href: "/scraping", icon: ScanSearch },
 ];
 
 export function Sidebar() {

@@ -12,6 +12,35 @@ from app.schemas.insight import InsightList, InsightRead
 router = APIRouter(prefix="/api", tags=["insights"])
 
 
+@router.post("/insights/calculate")
+def calculate_insights(db: Session = Depends(get_db)):
+    """Recalculate insights on existing agencies (with RNIC enrichment)."""
+    from app.services.scraping_service import _step_enrich_rnic, _step_generate_insights
+
+    errors = []
+
+    # Enrich with RNIC
+    rnic_matched = _step_enrich_rnic(db, errors)
+
+    # Delete old insights and recalculate
+    db.query(Insight).delete()
+    db.commit()
+    _step_generate_insights(db)
+
+    total_insights = db.query(Insight).count()
+    high_score = db.query(Insight).filter(Insight.score_besoin >= 50).count()
+    total_agences = db.query(Agence).count()
+
+    return {
+        "status": "done",
+        "total_insights": total_insights,
+        "high_score_count": high_score,
+        "rnic_matched": rnic_matched,
+        "total_agences": total_agences,
+        "errors": errors if errors else None,
+    }
+
+
 @router.get("/insights")
 def list_insights(
     page: int = Query(default=1, ge=1),
