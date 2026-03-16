@@ -19,12 +19,48 @@ from app.models.offre import OffreEmploi
 logger = logging.getLogger(__name__)
 
 SEARCH_TERMS = [
+    # Gestion locative
     "gestion locative",
+    "gerance locative",
+    "gestion patrimoine locatif",
+    "gestionnaire locatif",
+    "agence gestion locative",
+    "cabinet gestion locative",
+    # Syndic / copropriété
     "syndic copropriete",
-    "gestion immobiliere",
+    "syndic professionnel",
+    "syndic immobilier",
+    "administration copropriete",
+    "gestion copropriete",
+    "cabinet syndic",
+    # Administration de biens
     "administrateur biens",
+    "administrateur biens immobiliers",
+    "administration immeubles",
+    "gestion immeubles",
+    # Gérance immobilière
     "gerance immobiliere",
+    "regie immobiliere",
+    "cabinet gerance",
+    "gestion immobiliere",
+    "cabinet immobilier gestion",
+    # Property management / gestion de patrimoine immobilier
+    "gestion patrimoine immobilier",
+    "property management immobilier",
+    "gestion technique immobilier",
+    "facility management immobilier",
+    # Termes spécifiques métier
+    "gestionnaire copropriete",
+    "assistant gestion locative",
+    "assistant copropriete",
+    "intendance immobiliere",
+    "maintenance immobiliere",
 ]
+
+# NAF codes we target
+# 68.31Z = Agences immobilières
+# 68.32A = Administration d'immeubles et autres biens immobiliers
+NAF_CODES = "68.32A,68.31Z"
 
 GOV_API = "https://recherche-entreprises.api.gouv.fr/search"
 
@@ -34,7 +70,16 @@ GROUPS = {
     "sergic": "Sergic", "lamy": "Lamy", "laforêt": "Laforêt",
     "century 21": "Century 21", "guy hoquet": "Guy Hoquet",
     "square habitat": "Square Habitat", "gestrim": "Gestrim",
-    "icade": "Icade",
+    "icade": "Icade", "kaufman": "Kaufman & Broad",
+    "bouygues immobilier": "Bouygues Immobilier",
+    "pichet": "Pichet", "sogeprom": "Sogeprom",
+    "adb immobilier": "ADB Immobilier",
+    "urbania": "Urbania", "immo de france": "Immo de France",
+    "loiselet": "Loiselet & Daigremont",
+    "billon": "Billon Immobilier", "valrim": "Valrim",
+    "polylogis": "Polylogis", "keredes": "Keredes",
+    "cabinet nicolas": "Cabinet Nicolas",
+    "dauchez": "Dauchez", "thierry immobilier": "Thierry Immobilier",
 }
 
 EMPLOYEE_RANGES = {
@@ -105,11 +150,11 @@ def _step_collect(db: Session, errors: list) -> tuple[int, int]:
 
     with httpx.Client(timeout=30.0) as client:
         for term in SEARCH_TERMS:
-            for page in range(1, 6):
+            for page in range(1, 11):  # 10 pages per term
                 try:
                     resp = client.get(GOV_API, params={
                         "q": term, "page": page, "per_page": 25,
-                        "activite_principale": "68.32A,68.31Z",
+                        "activite_principale": NAF_CODES,
                         "etat_administratif": "A",
                     })
                     resp.raise_for_status()
