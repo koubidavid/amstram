@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Loader2, Square, Play } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ScrapingJob } from "@/lib/types";
 
@@ -13,13 +14,31 @@ export default function ScrapingPage() {
   const [jobs, setJobs] = useState<ScrapingJob[]>([]);
   const [cronExpression, setCronExpression] = useState("0 2 * * *");
   const [launching, setLaunching] = useState(false);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
-  const loadJobs = () => {
+  const hasRunningJob = jobs.some((j) => j.statut === "running" || j.statut === "pending");
+
+  const loadJobs = useCallback(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api.getScrapingJobs().then((d: any) => setJobs(d.items)).catch(console.error);
-  };
+  }, []);
 
-  useEffect(() => { loadJobs(); }, []);
+  // Poll every 3s when a job is running
+  useEffect(() => {
+    loadJobs();
+  }, [loadJobs]);
+
+  useEffect(() => {
+    if (hasRunningJob) {
+      pollingRef.current = setInterval(loadJobs, 3000);
+    } else if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [hasRunningJob, loadJobs]);
 
   const handleLaunch = async () => {
     setLaunching(true);
@@ -29,6 +48,17 @@ export default function ScrapingPage() {
     } finally {
       setLaunching(false);
     }
+  };
+
+  const handleStop = async (jobId: string) => {
+    await api.stopScraping(jobId);
+    loadJobs();
+  };
+
+  const handleStopAll = async () => {
+    const running = jobs.filter((j) => j.statut === "running" || j.statut === "pending");
+    await Promise.all(running.map((j) => api.stopScraping(j.id)));
+    loadJobs();
   };
 
   const handleCreateCron = async () => {
@@ -42,10 +72,14 @@ export default function ScrapingPage() {
   };
 
   const getStatusBadge = (statut: string) => {
-    const variants: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-      done: "default", running: "secondary", pending: "outline", failed: "destructive",
+    const config: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
+      done: { variant: "default", label: "Terminé" },
+      running: { variant: "secondary", label: "En cours..." },
+      pending: { variant: "outline", label: "En attente" },
+      failed: { variant: "destructive", label: "Arrêté" },
     };
-    return <Badge variant={variants[statut] || "outline"}>{statut}</Badge>;
+    const c = config[statut] || { variant: "outline" as const, label: statut };
+    return <Badge variant={c.variant}>{c.label}</Badge>;
   };
 
   return (
@@ -53,12 +87,27 @@ export default function ScrapingPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Scraping</h2>
-          <p className="text-muted-foreground">Lancer et planifier les scrappings</p>
+          <p className="text-muted-foreground">
+            {hasRunningJob
+              ? "Scraping en cours — les spiders parcourent internet..."
+              : "Lancer et planifier les scrappings"}
+          </p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={handleLaunch} disabled={launching}>
-            {launching ? "Lancement..." : "Lancer un scrapping"}
-          </Button>
+          {hasRunningJob ? (
+            <Button variant="destructive" onClick={handleStopAll}>
+              <Square className="mr-2 h-4 w-4" />
+              Arrêter le scrapping
+            </Button>
+          ) : (
+            <Button onClick={handleLaunch} disabled={launching}>
+              {launching ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Lancement...</>
+              ) : (
+                <><Play className="mr-2 h-4 w-4" />Lancer un scrapping</>
+              )}
+            </Button>
+          )}
           <Dialog>
             <DialogTrigger render={<Button variant="outline" />}>Planifier (cron)</DialogTrigger>
             <DialogContent>
@@ -75,6 +124,20 @@ export default function ScrapingPage() {
           </Dialog>
         </div>
       </div>
+
+      {hasRunningJob && (
+        <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950">
+          <CardContent className="flex items-center gap-3 pt-6">
+            <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+            <div>
+              <p className="font-medium text-blue-900 dark:text-blue-100">Scraping en cours</p>
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                Les spiders parcourent les sites d&apos;agences, Google Reviews et Trustpilot...
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader><CardTitle>Historique des jobs</CardTitle></CardHeader>
@@ -95,12 +158,25 @@ export default function ScrapingPage() {
                 {jobs.map((job) => (
                   <tr key={job.id} className="border-b">
                     <td className="p-3 text-sm"><Badge variant="outline">{job.type}</Badge></td>
-                    <td className="p-3">{getStatusBadge(job.statut)}</td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        {(job.statut === "running" || job.statut === "pending") && (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        )}
+                        {getStatusBadge(job.statut)}
+                      </div>
+                    </td>
                     <td className="p-3 text-sm font-mono">{job.cron_expression || "—"}</td>
                     <td className="p-3 text-sm">{new Date(job.created_at).toLocaleString("fr-FR")}</td>
                     <td className="p-3 text-right text-sm">{job.nb_agences_scrappees}</td>
                     <td className="p-3 text-center">
-                      {job.type === "cron" && (
+                      {(job.statut === "running" || job.statut === "pending") && (
+                        <Button variant="ghost" size="sm" className="text-red-500" onClick={() => handleStop(job.id)}>
+                          <Square className="mr-1 h-3 w-3" />
+                          Arrêter
+                        </Button>
+                      )}
+                      {job.type === "cron" && job.statut !== "running" && job.statut !== "pending" && (
                         <Button variant="ghost" size="sm" className="text-red-500" onClick={() => handleDeleteCron(job.id)}>Supprimer</Button>
                       )}
                     </td>

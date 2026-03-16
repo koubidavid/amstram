@@ -60,6 +60,33 @@ def create_cron(data: ScrapingJobCreate, db: Session = Depends(get_db)):
     return job
 
 
+@router.post("/stop/{job_id}", response_model=ScrapingJobRead)
+def stop_scraping(job_id: uuid.UUID, db: Session = Depends(get_db)):
+    from datetime import datetime
+
+    job = db.get(ScrapingJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.statut not in (JobStatut.pending, JobStatut.running):
+        raise HTTPException(status_code=400, detail="Job is not running")
+
+    # Revoke the Celery task
+    try:
+        from celery import Celery
+        import os
+        celery_app = Celery("amstram", broker=os.getenv("REDIS_URL", "redis://redis:6379/0"))
+        celery_app.control.revoke(str(job_id), terminate=True, signal="SIGTERM")
+    except Exception:
+        pass
+
+    job.statut = JobStatut.failed
+    job.finished_at = datetime.utcnow()
+    job.erreurs = {"info": "Arrêté manuellement par l'utilisateur"}
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 @router.delete("/cron/{job_id}")
 def delete_cron(job_id: uuid.UUID, db: Session = Depends(get_db)):
     job = db.get(ScrapingJob, job_id)
