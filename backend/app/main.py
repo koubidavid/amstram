@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Need Scrapper API", version="1.0.0")
+app = FastAPI(title="Amstram — Opportunity Finder API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
