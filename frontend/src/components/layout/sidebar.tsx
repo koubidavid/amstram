@@ -4,16 +4,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Building2,
-  BriefcaseBusiness,
   Brain,
   LayoutDashboard,
-  ScanSearch,
+  Target,
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  { name: "Cibles prioritaires", href: "/cibles", icon: Target },
   { name: "Agences", href: "/agences", icon: Building2 },
-  { name: "Insights", href: "/insights", icon: Brain },
+  { name: "Tous les insights", href: "/insights", icon: Brain },
 ];
 
 export function Sidebar() {
