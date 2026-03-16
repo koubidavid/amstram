@@ -1,0 +1,10 @@
+fnaim:
+  agence_list: ".annuaire-results .card"
+  nom: ".card-title::text"
+  adresse: ".card-address::text"
+  ville: ".card-city::text"
+
+foncia:
+  careers_list: ".job-listing"
+  titre: ".job-title::text"
+  description: ".job-description::text"
