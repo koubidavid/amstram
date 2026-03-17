@@ -1,5 +1,4 @@
 """Scraping API — one button does everything."""
-import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -13,9 +12,6 @@ from app.models.scraping_job import JobStatut, JobType, ScrapingJob
 from app.schemas.scraping_job import ScrapingJobList, ScrapingJobRead
 
 router = APIRouter(prefix="/api/scraping", tags=["scraping"])
-
-# Track running thread
-_running_thread: threading.Thread | None = None
 
 
 PIPELINE_STEPS = [
@@ -131,9 +127,11 @@ def _run_full_pipeline(job_id: str):
 
 @router.post("/lancer", response_model=ScrapingJobRead)
 def lancer_scraping(db: Session = Depends(get_db)):
-    """Launch full scraping pipeline in background thread.
-    Collects agencies + enriches with RNIC + computes insights."""
-    global _running_thread
+    """Launch full scraping pipeline.
+    Runs synchronously — the frontend polls /jobs for status."""
+    import threading
+    import logging
+    logger = logging.getLogger(__name__)
 
     job = ScrapingJob(type=JobType.manuel, statut=JobStatut.pending)
     db.add(job)
@@ -142,11 +140,17 @@ def lancer_scraping(db: Session = Depends(get_db)):
 
     job_id = str(job.id)
 
-    # Run in a daemon thread — more reliable than asyncio executor on Render
-    _running_thread = threading.Thread(
-        target=_run_full_pipeline, args=(job_id,), daemon=True
-    )
-    _running_thread.start()
+    def _run_in_thread():
+        try:
+            logger.warning(f"[Pipeline] Thread started for job {job_id}")
+            _run_full_pipeline(job_id)
+            logger.warning(f"[Pipeline] Thread completed for job {job_id}")
+        except Exception as e:
+            logger.error(f"[Pipeline] Thread crashed: {e}", exc_info=True)
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    logger.warning(f"[Pipeline] Thread launched: alive={t.is_alive()}")
 
     return job
 
@@ -164,6 +168,50 @@ def list_jobs(
     results = db.execute(query.offset(offset).limit(limit)).scalars().all()
     pages = (total + limit - 1) // limit if total > 0 else 0
     return ScrapingJobList(items=results, total=total, page=page, limit=limit, pages=pages)
+
+
+@router.get("/test-thread")
+def test_thread():
+    """Debug endpoint — test if threads work on this host."""
+    import threading, time, logging
+    logger = logging.getLogger(__name__)
+    results = {"started": False, "completed": False}
+
+    def worker():
+        results["started"] = True
+        logger.warning("[test-thread] Worker started!")
+        time.sleep(1)
+        results["completed"] = True
+        logger.warning("[test-thread] Worker completed!")
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    return {
+        "thread_alive": t.is_alive(),
+        "started": results["started"],
+        "completed": results["completed"],
+    }
+
+
+@router.get("/test-pipeline")
+def test_pipeline():
+    """Debug: run just step 1 (collect) synchronously and return result."""
+    import logging
+    logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        from app.services.scraping_service import _step_collect
+        errors = []
+        logger.warning("[test-pipeline] Starting collect...")
+        new, updated = _step_collect(db, errors)
+        logger.warning(f"[test-pipeline] Done: new={new} updated={updated} errors={len(errors)}")
+        return {"new": new, "updated": updated, "errors": errors[:5]}
+    except Exception as e:
+        logger.error(f"[test-pipeline] Failed: {e}", exc_info=True)
+        return {"error": str(e)}
+    finally:
+        db.close()
 
 
 @router.post("/stop/{job_id}", response_model=ScrapingJobRead)
