@@ -225,7 +225,7 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Pipeline progress */}
+      {/* Pipeline progress + Activity feed */}
       {hasRunningJob && (
         <Card className="border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950 dark:to-indigo-950 dark:border-blue-900 overflow-hidden">
           <CardContent className="pt-6 space-y-4">
@@ -284,6 +284,54 @@ export default function DashboardPage() {
                 );
               })}
             </div>
+
+            {/* Live activity feed */}
+            {prog?.logs && prog.logs.length > 0 && (
+              <div className="mt-4 border-t border-blue-200/50 dark:border-blue-800/50 pt-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300">
+                    Activité en direct
+                  </span>
+                </div>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-thin pr-1">
+                  {[...prog.logs].reverse().map((log: any, i: number) => {
+                    const icons: Record<string, string> = {
+                      search: "🔍", success: "✅", warning: "⚠️", error: "❌",
+                      database: "💾", building: "🏢", briefcase: "💼", fire: "🔥",
+                      calculator: "🧮", plus: "➕", info: "ℹ️",
+                    };
+                    const isNew = i === 0;
+                    return (
+                      <div
+                        key={`${log.time}-${i}`}
+                        className={`flex items-start gap-2.5 text-sm transition-all duration-500 ${
+                          isNew ? "bg-white/60 dark:bg-blue-900/40 rounded-lg px-2.5 py-2 shadow-sm" :
+                          i < 3 ? "px-2.5 py-1 opacity-90" : "px-2.5 py-1 opacity-50"
+                        }`}
+                      >
+                        <span className="text-base leading-5 shrink-0">{icons[log.icon] || "•"}</span>
+                        <div className="flex-1 min-w-0">
+                          <span className={`${isNew ? "text-blue-900 dark:text-blue-100 font-medium" : "text-blue-700 dark:text-blue-300"}`}>
+                            {log.msg}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {log.count !== undefined && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-mono">
+                              {log.count}
+                            </Badge>
+                          )}
+                          <span className="text-[10px] font-mono text-blue-400 dark:text-blue-500 tabular-nums">
+                            {log.time}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

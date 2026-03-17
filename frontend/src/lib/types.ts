@@ -86,6 +86,7 @@ export interface ScrapingJob {
     percent: number;
     eta_minutes: number;
     eta_display: string;
+    logs?: { time: string; step: number; msg: string; icon: string; count?: number }[];
   } | null;
   erreurs: Record<string, string> | null;
 }
