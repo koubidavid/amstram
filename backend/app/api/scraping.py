@@ -118,15 +118,22 @@ def _run_full_pipeline(job_id: str):
             _log_activity(db, job_id, 2, "Clé API Pappers non configurée — étape ignorée", "warning")
         logger.warning(f"[Pipeline] Step 3 done: Pappers matched={pappers_matched}")
 
-        # ── Step 4: Scan for job postings (reverse search) ──
+        # ── Step 4: Scan for job postings ──
         _log_activity(db, job_id, 3, "Recherche inversée : offres d'emploi sur les job boards...", "briefcase")
-        from app.services.job_scraper import scan_jobs_reverse
+        from app.services.job_scraper import scan_jobs_reverse, scan_agency_websites
 
         def _job_log(msg, icon="info", count=None):
             _log_activity(db, job_id, 3, msg, icon, count=count)
 
-        found = scan_jobs_reverse(db, errors, log_fn=_job_log)
-        logger.warning(f"[Pipeline] Step 4 done: {found} agencies hiring")
+        # Part A: Reverse search on DuckDuckGo (fast, broad)
+        found_reverse = scan_jobs_reverse(db, errors, log_fn=_job_log)
+
+        # Part B: Direct website scan (catches agencies with own career portals)
+        _log_activity(db, job_id, 3, "Scan direct des sites agences (pages carrières)...", "building")
+        found_sites = scan_agency_websites(db, errors, log_fn=_job_log)
+
+        found = found_reverse + found_sites
+        logger.warning(f"[Pipeline] Step 4 done: {found} agencies hiring (reverse={found_reverse}, sites={found_sites})")
 
         # ── Step 5: Recalculate insights ──
         _log_activity(db, job_id, 4, "Suppression des anciens scores...", "calculator")

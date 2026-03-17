@@ -1,9 +1,10 @@
-"""Job scraper — reverse search: find job postings first, then match to our agencies."""
+"""Job scraper — reverse search + direct website scan."""
 import logging
 import re
 from urllib.parse import unquote
 
 import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
 from app.models.agence import Agence
@@ -172,3 +173,97 @@ def scan_jobs_reverse(db: Session, errors: list, log_fn=None) -> int:
         )
 
     return found
+
+
+# ── Direct website scanning ──────────────────────────────────────────────────
+
+CAREER_PATHS = [
+    "/recrutement", "/carrieres", "/careers", "/emploi",
+    "/nous-rejoindre", "/rejoignez-nous", "/jobs", "/offres-emploi",
+    "/recrutement/offres", "/carrieres/offres",
+]
+
+
+def scan_agency_websites(db: Session, errors: list, log_fn=None) -> int:
+    """Scan agency websites directly for career pages mentioning target roles.
+    Complements the reverse search by catching agencies with their own career portals."""
+
+    agences = (
+        db.query(Agence)
+        .filter(Agence.site_web.isnot(None), Agence.site_web != "")
+        .filter(Agence.offres_emploi_detectees == [])  # Only scan those with no findings yet
+        .limit(30)
+        .all()
+    )
+
+    if not agences:
+        if log_fn:
+            log_fn("Aucune agence avec site web à scanner", "info")
+        return 0
+
+    if log_fn:
+        log_fn(f"Scan direct de {len(agences)} sites agences...", "search")
+
+    found = 0
+
+    with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+        for i, agence in enumerate(agences):
+            site_findings = _scan_one_website(client, agence.site_web, agence.nom, errors)
+
+            if site_findings:
+                # Merge with any existing findings
+                existing = agence.offres_emploi_detectees or []
+                agence.offres_emploi_detectees = existing + site_findings
+                found += 1
+                roles = list(set(f["role"] for f in site_findings))
+                if log_fn:
+                    log_fn(
+                        f"🔥 {agence.nom} — {len(site_findings)} offre(s) sur leur site ({', '.join(roles[:2])})",
+                        "fire", count=found,
+                    )
+
+            if (i + 1) % 10 == 0 and log_fn:
+                log_fn(f"Sites scannés : {i+1}/{len(agences)}, {found} avec offres", "search")
+
+    db.commit()
+
+    if log_fn:
+        log_fn(
+            f"Scan sites terminé : {found} agence(s) avec offres sur leur site",
+            "success" if found > 0 else "info", count=found,
+        )
+
+    return found
+
+
+def _scan_one_website(client: httpx.Client, site_web: str, agence_nom: str, errors: list) -> list[dict]:
+    """Scan a single agency website for career pages."""
+    findings = []
+    base_url = site_web if site_web.startswith("http") else f"https://{site_web}"
+
+    for path in CAREER_PATHS:
+        try:
+            resp = client.get(f"{base_url}{path}", headers=HEADERS, timeout=6.0)
+            if resp.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            text = soup.get_text(separator=" ", strip=True).lower()
+
+            for role in TARGET_ROLES:
+                if role in text:
+                    findings.append({
+                        "role": role,
+                        "title": f"Offre sur le site : {role}",
+                        "url": f"{base_url}{path}",
+                        "source": "Site agence",
+                    })
+
+            # If we found anything on this page, no need to check other paths
+            if findings:
+                break
+
+        except Exception:
+            continue
+
+    return findings
