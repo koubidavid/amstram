@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -8,9 +9,12 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import type { Agence, PaginatedResponse } from "@/lib/types";
 
-export default function AgencesPage() {
+function AgencesPageInner() {
+  const searchParams = useSearchParams();
+  const initialSearch = searchParams.get("search") || "";
+
   const [data, setData] = useState<PaginatedResponse<Agence> | null>(null);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
   const [page, setPage] = useState(1);
 
   useEffect(() => {
@@ -93,5 +97,13 @@ export default function AgencesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AgencesPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-muted-foreground">Chargement...</div>}>
+      <AgencesPageInner />
+    </Suspense>
   );
 }
