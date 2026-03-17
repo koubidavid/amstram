@@ -18,7 +18,7 @@ PIPELINE_STEPS = [
     {"key": "collect",   "label": "Collecte des agences (API INSEE)",    "estimate_min": 3},
     {"key": "rnic",      "label": "Enrichissement RNIC (lots gérés)",    "estimate_min": 1},
     {"key": "pappers",   "label": "Enrichissement Pappers (CA, dirigeants)", "estimate_min": 2},
-    {"key": "jobs",      "label": "Détection offres d'emploi (DuckDuckGo + sites)", "estimate_min": 3},
+    {"key": "jobs",      "label": "Détection offres d'emploi (recherche inversée)", "estimate_min": 1},
     {"key": "insights",  "label": "Calcul des scores et insights",      "estimate_min": 0.5},
 ]
 
@@ -119,12 +119,14 @@ def _run_full_pipeline(job_id: str):
             _log_activity(db, job_id, 2, "Clé API Pappers non configurée — étape ignorée", "warning")
         logger.warning(f"[Pipeline] Step 3 done: Pappers matched={pappers_matched}")
 
-        # ── Step 4: Scan for job postings ──
-        _log_activity(db, job_id, 3, "Scan des offres d'emploi via DuckDuckGo et sites agences...", "briefcase")
-        found = _scan_jobs_with_logs(db, errors, job_id)
-        _log_activity(db, job_id, 3,
-                      f"{found} agence(s) recrutent activement (gestionnaires locatifs, copropriété...)",
-                      "fire" if found > 0 else "success", count=found)
+        # ── Step 4: Scan for job postings (reverse search) ──
+        _log_activity(db, job_id, 3, "Recherche inversée : offres d'emploi sur les job boards...", "briefcase")
+        from app.services.job_scraper import scan_jobs_reverse
+
+        def _job_log(msg, icon="info", count=None):
+            _log_activity(db, job_id, 3, msg, icon, count=count)
+
+        found = scan_jobs_reverse(db, errors, log_fn=_job_log)
         logger.warning(f"[Pipeline] Step 4 done: {found} agencies hiring")
 
         # ── Step 5: Recalculate insights ──
@@ -222,63 +224,6 @@ def _step_collect_with_logs(db, errors: list, job_id: str) -> tuple[int, int]:
                               count=total_new)
 
     return total_new, total_updated
-
-
-def _scan_jobs_with_logs(db, errors: list, job_id: str) -> int:
-    """Scan job postings with detailed logging."""
-    from app.services.job_scraper import _search_duckduckgo, _scan_agency_website, TARGET_ROLES
-    from app.models.agence import Agence
-    import httpx
-    import time
-
-    agences = (
-        db.query(Agence)
-        .filter(Agence.siren.isnot(None))
-        .filter(Agence.offres_emploi_detectees.is_(None))
-        .order_by(Agence.nb_lots_geres.desc().nullslast())
-        .limit(20)  # Reduced from 50 to avoid DuckDuckGo rate limits
-        .all()
-    )
-
-    if not agences:
-        _log_activity(db, job_id, 3, "Aucune agence à scanner (déjà toutes scannées)", "info")
-        return 0
-
-    _log_activity(db, job_id, 3, f"{len(agences)} agences à scanner pour offres d'emploi...", "briefcase")
-    found = 0
-
-    with httpx.Client(timeout=8.0, follow_redirects=True) as client:
-        for i, agence in enumerate(agences):
-            job_findings = []
-
-            try:
-                # Try agency website first (fast, no rate limit)
-                if agence.site_web:
-                    job_findings = _scan_agency_website(client, agence.site_web, agence.nom, errors)
-
-                # DuckDuckGo only for top agencies (slower, rate limited)
-                if not job_findings:
-                    job_findings = _search_duckduckgo(client, agence.nom, errors)
-                    time.sleep(2)  # Be gentle with DuckDuckGo
-            except Exception:
-                pass  # Skip on timeout, don't block the pipeline
-
-            agence.offres_emploi_detectees = job_findings if job_findings else []
-            if job_findings:
-                found += 1
-                roles = list(set(j.get("role", "") for j in job_findings))
-                _log_activity(db, job_id, 3,
-                              f"🔥 {agence.nom} recrute ! ({', '.join(roles[:2])})",
-                              "fire", count=found)
-
-            # Progress every 5 agencies
-            if (i + 1) % 5 == 0:
-                _log_activity(db, job_id, 3,
-                              f"Scan en cours... {i+1}/{len(agences)} agences, {found} recrutent",
-                              "briefcase")
-
-    db.commit()
-    return found
 
 
 @router.post("/lancer")
