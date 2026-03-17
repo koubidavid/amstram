@@ -83,9 +83,10 @@ export default function EmploiPage() {
 
   const tabs = [
     { key: "all_matched", label: "Matchées avec nos agences", icon: Building2 },
-    { key: "all_non_aggregator", label: "Tous (hors agrégateurs)", icon: Briefcase },
+    { key: "all_non_aggregator", label: "Sites agences", icon: Briefcase },
+    { key: "all", label: "Tous les résultats", icon: Search },
     { key: "gestionnaire locatif", label: "Gestionnaire locatif", icon: Search },
-    { key: "assistant gestion locative", label: "Assistant gestion locative", icon: Search },
+    { key: "assistant gestion locative", label: "Assistant gestion loc.", icon: Search },
     { key: "gestionnaire copropriété", label: "Gestionnaire copro", icon: Search },
     { key: "assistant copropriété", label: "Assistant copro", icon: Search },
   ];
@@ -94,6 +95,7 @@ export default function EmploiPage() {
     if (!data) return [];
     if (activeTab === "all_matched") return data.all_matched || [];
     if (activeTab === "all_non_aggregator") return data.all_non_aggregator || [];
+    if (activeTab === "all") return data.all_links || [];
     return (data.by_role?.[activeTab] || []);
   };
 
@@ -155,6 +157,8 @@ export default function EmploiPage() {
                     ? data.all_matched?.length || 0
                     : tab.key === "all_non_aggregator"
                     ? data.all_non_aggregator?.length || 0
+                    : tab.key === "all"
+                    ? data.all_links?.length || 0
                     : data.by_role?.[tab.key]?.length || 0}
                 </Badge>
               </Button>

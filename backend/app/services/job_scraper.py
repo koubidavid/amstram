@@ -319,6 +319,7 @@ def live_search_jobs(db: Session) -> dict:
         "matched_to_db": len(matched_links),
         "search_engine": source,
         "by_role": {role: [l for l in links] for role, links in by_role.items()},
+        "all_links": all_links,
         "all_matched": matched_links,
         "all_non_aggregator": agency_links,
     }
