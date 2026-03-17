@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, X, LayoutDashboard, Target, Kanban, Building2, Brain } from "lucide-react";
+import { Menu, X, LayoutDashboard, Target, Kanban, Building2, Brain, TrendingUp } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -11,6 +11,7 @@ const navigation = [
   { name: "Pipeline", href: "/kanban", icon: Kanban },
   { name: "Agences", href: "/agences", icon: Building2 },
   { name: "Insights", href: "/insights", icon: Brain },
+  { name: "Prédictions", href: "/predictions", icon: TrendingUp },
 ];
 
 export function MobileNav() {

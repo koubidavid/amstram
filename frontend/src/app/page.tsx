@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import Link from "next/link";
 import { Building2, Brain, AlertTriangle, Loader2, Play, RefreshCw, Calculator } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,40 @@ import { Badge } from "@/components/ui/badge";
 import { KpiCard } from "@/components/cards/kpi-card";
 import { api } from "@/lib/api";
 import type { ScrapingJob } from "@/lib/types";
+
+function NextActionsWidget() {
+  const [targets, setTargets] = useState<any[]>([]);
+
+  useEffect(() => {
+    // Get top uncontacted targets
+    api.getInsights("score_min=50&limit=5").then((d: any) => {
+      setTargets(d.items.filter((i: any) => !i.agence_groupe || true).slice(0, 5));
+    }).catch(console.error);
+  }, []);
+
+  if (targets.length === 0) return <p className="text-sm text-muted-foreground">Aucune cible. Lancez un scraping.</p>;
+
+  return (
+    <div className="space-y-2">
+      {targets.map((t: any) => (
+        <div key={t.id} className="flex items-center justify-between border-b pb-2 last:border-0">
+          <div>
+            <Link href={`/agences/${t.agence_id}`} className="text-sm font-medium text-primary hover:underline">
+              {t.agence_nom?.substring(0, 35)}{t.agence_nom?.length > 35 ? "..." : ""}
+            </Link>
+            <p className="text-xs text-muted-foreground">{t.agence_ville} — Score: {t.score_besoin}</p>
+          </div>
+          <Link href={`/agences/${t.agence_id}`}>
+            <Button variant="outline" size="sm">Voir</Button>
+          </Link>
+        </div>
+      ))}
+      <Link href="/cibles" className="text-sm text-primary hover:underline block text-center mt-2">
+        Voir toutes les cibles →
+      </Link>
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({ totalAgences: 0, insightsTotal: 0, insightsHigh: 0, rnicEnriched: 0 });
@@ -172,6 +207,17 @@ export default function DashboardPage() {
           icon={AlertTriangle}
         />
       </div>
+
+      {/* Next actions widget */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Prochaines actions</CardTitle>
+          <p className="text-xs text-muted-foreground">Agences à contacter en priorité</p>
+        </CardHeader>
+        <CardContent>
+          <NextActionsWidget />
+        </CardContent>
+      </Card>
 
       {/* Recent jobs */}
       {jobs.length > 0 && (

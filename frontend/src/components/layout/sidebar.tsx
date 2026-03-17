@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Target,
   Kanban,
+  TrendingUp,
 } from "lucide-react";
 
 const navigation = [
@@ -18,6 +19,7 @@ const navigation = [
   { name: "Pipeline", href: "/kanban", icon: Kanban },
   { name: "Agences", href: "/agences", icon: Building2 },
   { name: "Tous les insights", href: "/insights", icon: Brain },
+  { name: "Prédictions", href: "/predictions", icon: TrendingUp },
 ];
 
 export function Sidebar() {

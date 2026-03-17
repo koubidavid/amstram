@@ -162,11 +162,16 @@ function CibleCard({ row, expanded, onToggle }: { row: InsightRow; expanded: boo
           </div>
 
           {/* CTA */}
-          <Link href={`/agences/${row.agence_id}`}>
-            <Button variant="outline" className="w-full">
-              Voir la fiche complète <ArrowRight className="ml-2 h-4 w-4" />
+          <div className="flex gap-2">
+            <Button variant="default" size="sm" onClick={async (e) => { e.stopPropagation(); await api.updateCommercial(row.agence_id, { statut_commercial: "a_contacter" }); }}>
+              Marquer &quot;À contacter&quot;
             </Button>
-          </Link>
+            <Link href={`/agences/${row.agence_id}`}>
+              <Button variant="outline" size="sm">
+                Voir la fiche complète <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+            </Link>
+          </div>
         </CardContent>
       )}
     </Card>
