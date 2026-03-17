@@ -60,7 +60,7 @@ def update_commercial_status(
     data: dict,
     db: Session = Depends(get_db),
 ):
-    """Update commercial tracking fields (statut_commercial, notes_commercial)."""
+    """Update commercial tracking fields."""
     agence = db.get(Agence, agence_id)
     if not agence:
         raise HTTPException(status_code=404, detail="Agence not found")
@@ -69,10 +69,84 @@ def update_commercial_status(
         agence.statut_commercial = data["statut_commercial"]
     if "notes_commercial" in data:
         agence.notes_commercial = data["notes_commercial"]
+    if "telephone" in data:
+        agence.telephone = data["telephone"]
 
     db.commit()
     db.refresh(agence)
     return agence
+
+
+@router.post("/{agence_id}/appel")
+def log_appel(
+    agence_id: uuid.UUID,
+    data: dict,
+    db: Session = Depends(get_db),
+):
+    """Log a phone call on an agence."""
+    from datetime import datetime, timezone
+
+    agence = db.get(Agence, agence_id)
+    if not agence:
+        raise HTTPException(status_code=404, detail="Agence not found")
+
+    appels = agence.appels or []
+    appels.append({
+        "date": datetime.now(timezone.utc).isoformat(),
+        "resume": data.get("resume", ""),
+        "resultat": data.get("resultat", ""),
+        "statut_avant": agence.statut_commercial,
+    })
+    agence.appels = appels
+
+    # Update status if provided
+    if data.get("nouveau_statut"):
+        agence.statut_commercial = data["nouveau_statut"]
+
+    db.commit()
+    db.refresh(agence)
+    return agence
+
+
+@router.get("/kanban")
+def get_kanban(db: Session = Depends(get_db)):
+    """Get agences grouped by commercial status for kanban view."""
+    agences = db.query(Agence).filter(
+        Agence.statut_commercial.isnot(None),
+        Agence.statut_commercial != "nouveau",
+    ).all()
+
+    # Also include top targets that are still "nouveau"
+    from app.models.insight import Insight
+    top_nouveaux = (
+        db.query(Agence)
+        .join(Insight)
+        .filter(Agence.statut_commercial.in_(["nouveau", None]))
+        .filter(Insight.score_besoin >= 50)
+        .order_by(Insight.score_besoin.desc())
+        .limit(20)
+        .all()
+    )
+
+    all_agences = {a.id: a for a in list(agences) + list(top_nouveaux)}
+
+    columns = {}
+    for a in all_agences.values():
+        statut = a.statut_commercial or "nouveau"
+        if statut not in columns:
+            columns[statut] = []
+        columns[statut].append({
+            "id": str(a.id),
+            "nom": a.nom,
+            "ville": a.ville,
+            "dirigeant_nom": a.dirigeant_nom,
+            "telephone": a.telephone,
+            "nb_lots_geres": a.nb_lots_geres,
+            "nb_appels": len(a.appels) if a.appels else 0,
+            "dernier_appel": a.appels[-1]["date"] if a.appels else None,
+        })
+
+    return columns
 
 
 @router.get("/{agence_id}/snapshots")

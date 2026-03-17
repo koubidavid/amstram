@@ -7,11 +7,13 @@ import {
   Brain,
   LayoutDashboard,
   Target,
+  Kanban,
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Cibles prioritaires", href: "/cibles", icon: Target },
+  { name: "Pipeline", href: "/kanban", icon: Kanban },
   { name: "Agences", href: "/agences", icon: Building2 },
   { name: "Tous les insights", href: "/insights", icon: Brain },
 ];

@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, ExternalLink, CheckCircle, HelpCircle, User, DollarSign, Calendar, Save } from "lucide-react";
+import { ArrowLeft, ExternalLink, CheckCircle, HelpCircle, User, Phone, Save } from "lucide-react";
 import { ScoreGauge } from "@/components/charts/score-gauge";
 import { api } from "@/lib/api";
 import type { Agence, InsightRead } from "@/lib/types";
@@ -50,7 +50,11 @@ export default function AgenceDetailPage() {
   const [insights, setInsights] = useState<InsightRead[]>([]);
   const [notes, setNotes] = useState("");
   const [statut, setStatut] = useState("nouveau");
+  const [telephone, setTelephone] = useState("");
   const [saving, setSaving] = useState(false);
+  const [appelResume, setAppelResume] = useState("");
+  const [appelResultat, setAppelResultat] = useState("pas_repondu");
+  const [loggingAppel, setLoggingAppel] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -59,6 +63,7 @@ export default function AgenceDetailPage() {
       setAgence(a);
       setNotes(a.notes_commercial || "");
       setStatut(a.statut_commercial || "nouveau");
+      setTelephone(a.telephone || "");
     }).catch(console.error);
     api.getAgenceInsightsHistorique(id).then(setInsights).catch(console.error);
   }, [id]);
@@ -66,9 +71,21 @@ export default function AgenceDetailPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateCommercial(id, { statut_commercial: statut, notes_commercial: notes });
+      const updated = await api.updateCommercial(id, { statut_commercial: statut, notes_commercial: notes, telephone });
+      setAgence(updated);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleLogAppel = async () => {
+    setLoggingAppel(true);
+    try {
+      const updated = await api.logAppel(id, { resume: appelResume, resultat: appelResultat });
+      setAgence(updated);
+      setAppelResume("");
+    } finally {
+      setLoggingAppel(false);
     }
   };
 
@@ -125,15 +142,68 @@ export default function AgenceDetailPage() {
               </button>
             ))}
           </div>
+          <div className="flex gap-3">
+            <Input
+              value={telephone}
+              onChange={(e) => setTelephone(e.target.value)}
+              placeholder="Numéro de téléphone"
+              className="max-w-[200px]"
+            />
+            {telephone && (
+              <a href={`tel:${telephone}`}>
+                <Button variant="outline" size="sm"><Phone className="mr-2 h-4 w-4" /> Appeler</Button>
+              </a>
+            )}
+          </div>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Notes du commercial (observations après appel, rdv, etc.)..."
-            className="w-full min-h-[80px] rounded-md border px-3 py-2 text-sm"
+            placeholder="Notes du commercial..."
+            className="w-full min-h-[60px] rounded-md border px-3 py-2 text-sm"
           />
           <Button onClick={handleSave} disabled={saving} size="sm">
             <Save className="mr-2 h-4 w-4" /> {saving ? "Sauvegarde..." : "Sauvegarder"}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Log appel */}
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2"><Phone className="h-5 w-5" /> Journal d&apos;appels</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex gap-3">
+            <Input
+              value={appelResume}
+              onChange={(e) => setAppelResume(e.target.value)}
+              placeholder="Résumé de l'appel..."
+              className="flex-1"
+            />
+            <select className="rounded-md border px-2 text-sm" value={appelResultat} onChange={(e) => setAppelResultat(e.target.value)}>
+              <option value="pas_repondu">Pas répondu</option>
+              <option value="rappeler">À rappeler</option>
+              <option value="interesse">Intéressé</option>
+              <option value="rdv_pris">RDV pris</option>
+              <option value="pas_interesse">Pas intéressé</option>
+            </select>
+            <Button onClick={handleLogAppel} disabled={loggingAppel || !appelResume} size="sm">
+              {loggingAppel ? "..." : "Enregistrer"}
+            </Button>
+          </div>
+
+          {/* Historique */}
+          {agence.appels && agence.appels.length > 0 ? (
+            <div className="space-y-2">
+              {[...agence.appels].reverse().map((appel: { date: string; resume: string; resultat: string }, i: number) => (
+                <div key={i} className="flex items-start gap-3 text-sm border-b pb-2 last:border-0">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">{new Date(appel.date).toLocaleString("fr-FR")}</span>
+                  <span className="flex-1">{appel.resume}</span>
+                  <Badge variant="outline" className="text-xs shrink-0">{appel.resultat}</Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Aucun appel enregistré</p>
+          )}
         </CardContent>
       </Card>
 

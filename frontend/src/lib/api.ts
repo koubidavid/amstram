@@ -24,8 +24,11 @@ export const api = {
   getScrapingJobs: () => fetchApi<any>("/api/scraping/jobs"),
   createCron: (cron: string) => fetchApi<any>("/api/scraping/cron", { method: "POST", body: JSON.stringify({ cron_expression: cron }) }),
   stopScraping: (id: string) => fetchApi<any>(`/api/scraping/stop/${id}`, { method: "POST" }),
-  updateCommercial: (id: string, data: { statut_commercial?: string; notes_commercial?: string }) =>
+  updateCommercial: (id: string, data: { statut_commercial?: string; notes_commercial?: string; telephone?: string }) =>
     fetchApi<any>(`/api/agences/${id}/commercial`, { method: "PATCH", body: JSON.stringify(data) }),
+  logAppel: (id: string, data: { resume: string; resultat: string; nouveau_statut?: string }) =>
+    fetchApi<any>(`/api/agences/${id}/appel`, { method: "POST", body: JSON.stringify(data) }),
+  getKanban: () => fetchApi<any>("/api/agences/kanban"),
   deleteCron: (id: string) => fetchApi<void>(`/api/scraping/cron/${id}`, { method: "DELETE" }),
   exportUrl: (entity: string, format: string) => `${API_BASE}/api/export/${entity}/${format}`,
 };

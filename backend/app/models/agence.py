@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -48,6 +48,8 @@ class Agence(Base):
     # Commercial tracking
     statut_commercial: Mapped[str | None] = mapped_column(String(50), default="nouveau")
     notes_commercial: Mapped[str | None] = mapped_column(Text)
+    telephone: Mapped[str | None] = mapped_column(String(30))
+    appels: Mapped[dict | None] = mapped_column(JSON)  # [{date, resume, statut_avant, statut_apres}]
 
     offres = relationship("OffreEmploi", back_populates="agence")
     avis = relationship("Avis", back_populates="agence")
