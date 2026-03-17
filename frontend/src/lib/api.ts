@@ -20,7 +20,16 @@ export const api = {
   getOffres: (params?: string) => fetchApi<any>(`/api/offres?${params || ""}`),
   getInsights: (params?: string) => fetchApi<any>(`/api/insights?${params || ""}`),
   calculateInsights: () => fetchApi<any>("/api/insights/calculate", { method: "POST" }),
-  lancerScraping: () => fetchApi<any>("/api/scraping/lancer", { method: "POST" }),
+  lancerScraping: () => {
+    // Fire-and-forget: pipeline runs synchronously on server (5-10 min).
+    // We send the request but don't wait for the response.
+    // The UI polls GET /jobs every 3s for live progress.
+    fetch(`${API_BASE}/api/scraping/lancer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    }).catch(() => {}); // Ignore timeout/errors — polling handles status
+    return Promise.resolve({});
+  },
   getScrapingJobs: () => fetchApi<any>("/api/scraping/jobs"),
   createCron: (cron: string) => fetchApi<any>("/api/scraping/cron", { method: "POST", body: JSON.stringify({ cron_expression: cron }) }),
   stopScraping: (id: string) => fetchApi<any>(`/api/scraping/stop/${id}`, { method: "POST" }),

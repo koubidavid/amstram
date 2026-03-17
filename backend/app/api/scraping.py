@@ -280,10 +280,10 @@ def _scan_jobs_with_logs(db, errors: list, job_id: str) -> int:
 
 @router.post("/lancer")
 def lancer_scraping(db: Session = Depends(get_db)):
-    """Launch full scraping pipeline. Fire-and-forget via fetch, runs synchronously."""
-    import threading
+    """Launch full scraping pipeline SYNCHRONOUSLY.
+    The frontend fires this request and doesn't wait for the response.
+    Progress is tracked via polling GET /jobs."""
     import logging
-    import traceback
     logger = logging.getLogger(__name__)
 
     # Auto-clean stuck jobs
@@ -304,32 +304,15 @@ def lancer_scraping(db: Session = Depends(get_db)):
     db.refresh(job)
     job_id = str(job.id)
 
-    def _run_in_thread():
-        _db = SessionLocal()
-        try:
-            logger.warning(f"[Pipeline] Thread started for job {job_id}")
-            _run_full_pipeline(job_id)
-        except Exception as e:
-            logger.error(f"[Pipeline] Thread CRASHED: {traceback.format_exc()}")
-            # Save error to job so it's visible in the UI
-            j = _db.get(ScrapingJob, uuid.UUID(job_id))
-            if j:
-                j.statut = JobStatut.failed
-                j.finished_at = datetime.now(timezone.utc)
-                j.erreurs = {"error": str(e), "traceback": traceback.format_exc()[:500]}
-                _db.commit()
-        finally:
-            _db.close()
+    logger.warning(f"[Pipeline] Running synchronously for job {job_id}")
 
-    t = threading.Thread(target=_run_in_thread, daemon=True)
-    t.start()
-    logger.warning(f"[Pipeline] Thread launched: alive={t.is_alive()}, name={t.name}")
+    # Run pipeline synchronously — blocks this HTTP request
+    # Frontend uses fire-and-forget fetch so user isn't blocked
+    _run_full_pipeline(job_id)
 
-    # Return immediately — job is already "running"
-    return {"id": str(job.id), "statut": job.statut.value, "created_at": job.created_at.isoformat(),
-            "started_at": job.started_at.isoformat() if job.started_at else None,
-            "type": job.type.value, "nb_agences_scrappees": 0, "progression": None,
-            "erreurs": None, "finished_at": None, "cron_expression": None}
+    # Return final state
+    db.refresh(job)
+    return {"id": str(job.id), "statut": job.statut.value, "nb_agences_scrappees": job.nb_agences_scrappees}
 
 
 @router.get("/jobs", response_model=ScrapingJobList)

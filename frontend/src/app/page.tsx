@@ -120,12 +120,9 @@ export default function DashboardPage() {
 
   const handleScrape = async () => {
     setScraping(true);
-    try {
-      await api.lancerScraping();
-      loadJobs();
-    } finally {
-      setScraping(false);
-    }
+    api.lancerScraping(); // Fire-and-forget
+    // Start polling immediately — job will appear as "running" within 1-2s
+    setTimeout(() => { loadJobs(); setScraping(false); }, 2000);
   };
 
   const handleStop = async () => {
