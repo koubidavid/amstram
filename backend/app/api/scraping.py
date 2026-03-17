@@ -301,6 +301,169 @@ def list_jobs(
     return ScrapingJobList(items=results, total=total, page=page, limit=limit, pages=pages)
 
 
+@router.get("/recherche-emploi")
+def recherche_emploi(db: Session = Depends(get_db)):
+    """Live search for job postings across all sources. Returns raw links grouped by role.
+    Filters out aggregators, keeps only agency-related links."""
+    import time
+    import httpx
+    import re
+    from urllib.parse import unquote
+    from app.services.job_scraper import TARGET_ROLES, HEADERS
+    from app.models.agence import Agence
+
+    AGGREGATORS = {
+        "indeed.fr", "indeed.com", "hellowork.com", "linkedin.com", "jooble.org",
+        "jobijoba.com", "cadremploi.fr", "apec.fr", "meteojob.com", "optioncarriere.com",
+        "glassdoor.fr", "glassdoor.com", "keljob.com", "randstad.fr", "manpower.fr",
+        "adecco.fr", "michaelpage.fr", "robertwalters.fr", "talent.com", "adzuna.fr",
+        "cojob.fr", "emploi.org", "regionsjob.com", "staffsante.fr", "recrutimmo.com",
+        "google.com", "google.fr", "youtube.com", "facebook.com", "wikipedia.org",
+        "pole-emploi.fr", "duckduckgo.com", "jobrapido.com",
+    }
+
+    # Load agency names for matching
+    agences = db.query(Agence).filter(Agence.siren.isnot(None)).all()
+    agency_words = set()
+    for a in agences:
+        for w in a.nom.lower().split():
+            if len(w) >= 4 and w not in {"immobilier", "immobiliere", "gestion", "syndic", "cabinet", "agence", "groupe", "societe"}:
+                agency_words.add(w)
+
+    results_by_role = {}
+    all_links = []
+
+    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+        for role in TARGET_ROLES:
+            role_links = []
+
+            # DuckDuckGo searches with different angles
+            queries = [
+                f'offre emploi "{role}" recrutement agence',
+                f'"{role}" recrute CDI immobilier',
+                f'"{role}" poste agence immobilière 2026',
+            ]
+
+            for query in queries:
+                try:
+                    resp = client.get(
+                        "https://html.duckduckgo.com/html/",
+                        params={"q": query},
+                        headers=HEADERS,
+                        timeout=10.0,
+                    )
+                    if resp.status_code != 200:
+                        continue
+
+                    raw_results = re.findall(
+                        r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.+?)</a>',
+                        resp.text,
+                    )
+                    snippets = re.findall(
+                        r'class="result__snippet"[^>]*>(.+?)</[at]',
+                        resp.text,
+                    )
+
+                    for i, (raw_url, raw_title) in enumerate(raw_results[:10]):
+                        title = re.sub(r"<[^>]+>", "", raw_title).strip()
+                        url_match = re.search(r"uddg=([^&]+)", raw_url)
+                        url = unquote(url_match.group(1)) if url_match else raw_url
+                        snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip()[:200] if i < len(snippets) else ""
+
+                        # Filter out aggregators
+                        domain = re.search(r'https?://(?:www\.)?([^/]+)', url)
+                        domain_str = domain.group(1) if domain else ""
+                        is_aggregator = any(agg in domain_str for agg in AGGREGATORS)
+
+                        # Check if any agency name word is in the title or snippet
+                        text_lower = (title + " " + snippet).lower()
+                        matched_agency = None
+                        for a in agences:
+                            first_word = next((w for w in a.nom.lower().split() if len(w) >= 4 and w not in {"immobilier", "immobiliere", "gestion", "syndic", "cabinet", "agence", "groupe", "societe"}), None)
+                            if first_word and first_word in text_lower:
+                                matched_agency = a.nom
+                                break
+
+                        link = {
+                            "title": title[:150],
+                            "url": url[:300],
+                            "snippet": snippet[:200],
+                            "domain": domain_str,
+                            "is_aggregator": is_aggregator,
+                            "matched_agency": matched_agency,
+                            "role": role,
+                        }
+
+                        role_links.append(link)
+                        all_links.append(link)
+
+                except Exception:
+                    continue
+
+                time.sleep(1.5)
+
+            results_by_role[role] = role_links
+
+    # Also add France Travail results
+    ft_links = []
+    with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+        for role in TARGET_ROLES:
+            try:
+                resp = client.get(
+                    "https://candidat.francetravail.fr/offres/recherche",
+                    params={"motsCles": role, "offresPartenaires": "true", "range": "0-14"},
+                    headers=HEADERS,
+                    timeout=12.0,
+                )
+                if resp.status_code == 200:
+                    entries = re.findall(r'<li[^>]*data-id-offre="([^"]+)"(.*?)</li>', resp.text, re.S)
+                    for offre_id, block in entries:
+                        title_m = re.search(r'<h2[^>]*>(.*?)</h2>', block, re.S)
+                        title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+                        desc_m = re.search(r'class="description"[^>]*>(.*?)<', block, re.S)
+                        desc = re.sub(r'<[^>]+>', '', desc_m.group(1)).strip()[:200] if desc_m else ""
+
+                        # Try to find company
+                        company = ""
+                        text_lower = (title + " " + desc).lower()
+                        matched_agency = None
+                        for a in agences:
+                            first_word = next((w for w in a.nom.lower().split() if len(w) >= 4 and w not in {"immobilier", "immobiliere", "gestion", "syndic", "cabinet", "agence", "groupe", "societe"}), None)
+                            if first_word and first_word in text_lower:
+                                matched_agency = a.nom
+                                break
+
+                        link = {
+                            "title": title[:150],
+                            "url": f"https://candidat.francetravail.fr/offres/recherche/detail/{offre_id}",
+                            "snippet": desc,
+                            "domain": "francetravail.fr",
+                            "is_aggregator": False,
+                            "matched_agency": matched_agency,
+                            "role": role,
+                        }
+                        ft_links.append(link)
+                        all_links.append(link)
+
+            except Exception:
+                continue
+            time.sleep(1)
+
+    # Summary
+    agency_links = [l for l in all_links if not l["is_aggregator"] or l["matched_agency"]]
+    matched_links = [l for l in all_links if l["matched_agency"]]
+
+    return {
+        "total_links": len(all_links),
+        "agency_links": len(agency_links),
+        "matched_to_db": len(matched_links),
+        "by_role": {role: [l for l in links if not l["is_aggregator"] or l["matched_agency"]]
+                    for role, links in results_by_role.items()},
+        "france_travail": ft_links,
+        "all_matched": matched_links,
+    }
+
+
 @router.get("/test-thread")
 def test_thread():
     """Debug endpoint — test if threads work on this host."""

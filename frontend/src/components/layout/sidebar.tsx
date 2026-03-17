@@ -7,6 +7,7 @@ import { Search } from "lucide-react";
 import {
   Building2,
   Brain,
+  Briefcase,
   LayoutDashboard,
   Target,
   Kanban,
@@ -18,6 +19,7 @@ const navigation = [
   { name: "Cibles prioritaires", href: "/cibles", icon: Target },
   { name: "Pipeline", href: "/kanban", icon: Kanban },
   { name: "Agences", href: "/agences", icon: Building2 },
+  { name: "Offres d'emploi", href: "/emploi", icon: Briefcase },
   { name: "Tous les insights", href: "/insights", icon: Brain },
   { name: "Prédictions", href: "/predictions", icon: TrendingUp },
 ];
