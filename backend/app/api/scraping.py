@@ -70,7 +70,6 @@ def _run_full_pipeline(job_id: str):
     _activity_logs = []
 
     from app.services.scraping_service import _step_collect, _step_enrich_rnic, _step_enrich_pappers, _step_generate_insights
-    from app.services.job_scraper import scan_agency_jobs
     from app.models.insight import Insight
     from app.models.agence import Agence
 
