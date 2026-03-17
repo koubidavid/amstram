@@ -18,10 +18,14 @@ TARGET_ROLES = [
     "assistant copropriété",
 ]
 
-# Compact search queries — one per role, across all job boards
+# Compact search queries — one per role, across multiple sources
 SEARCH_QUERIES = [
+    # Job boards
     '"{role}" recrutement immobilier site:indeed.fr OR site:hellowork.com OR site:welcometothejungle.com',
     '"{role}" offre emploi agence immobilière site:linkedin.com OR site:apec.fr OR site:cadremploi.fr',
+    # Agency career portals (grands réseaux)
+    '"{role}" site:recrutement.nestenn.com OR site:recrutement.foncia.com OR site:citya-immobilier.com/recrutement',
+    '"{role}" site:nexity.fr/emploi OR site:oralia.fr/recrutement OR site:sergic.com/recrutement OR site:laforet.com/recrutement',
 ]
 
 HEADERS = {
