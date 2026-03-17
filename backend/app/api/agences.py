@@ -46,6 +46,51 @@ def list_agences(
     return AgenceList(items=results, total=total, page=page, limit=limit, pages=pages)
 
 
+# ── Static routes MUST come before /{agence_id} to avoid UUID parsing errors ──
+
+@router.get("/kanban")
+def get_kanban(db: Session = Depends(get_db)):
+    """Get agences grouped by commercial status for kanban view."""
+    agences = db.query(Agence).filter(
+        Agence.statut_commercial.isnot(None),
+        Agence.statut_commercial != "nouveau",
+    ).all()
+
+    # Also include top targets that are still "nouveau"
+    from app.models.insight import Insight
+    top_nouveaux = (
+        db.query(Agence)
+        .join(Insight)
+        .filter(Agence.statut_commercial.in_(["nouveau", None]))
+        .filter(Insight.score_besoin >= 50)
+        .order_by(Insight.score_besoin.desc())
+        .limit(20)
+        .all()
+    )
+
+    all_agences = {a.id: a for a in list(agences) + list(top_nouveaux)}
+
+    columns = {}
+    for a in all_agences.values():
+        statut = a.statut_commercial or "nouveau"
+        if statut not in columns:
+            columns[statut] = []
+        columns[statut].append({
+            "id": str(a.id),
+            "nom": a.nom,
+            "ville": a.ville,
+            "dirigeant_nom": a.dirigeant_nom,
+            "telephone": a.telephone,
+            "nb_lots_geres": a.nb_lots_geres,
+            "nb_appels": len(a.appels) if a.appels else 0,
+            "dernier_appel": a.appels[-1]["date"] if a.appels else None,
+        })
+
+    return columns
+
+
+# ── Dynamic routes with {agence_id} ──
+
 @router.get("/{agence_id}", response_model=AgenceRead)
 def get_agence(agence_id: uuid.UUID, db: Session = Depends(get_db)):
     agence = db.get(Agence, agence_id)
@@ -106,47 +151,6 @@ def log_appel(
     db.commit()
     db.refresh(agence)
     return agence
-
-
-@router.get("/kanban")
-def get_kanban(db: Session = Depends(get_db)):
-    """Get agences grouped by commercial status for kanban view."""
-    agences = db.query(Agence).filter(
-        Agence.statut_commercial.isnot(None),
-        Agence.statut_commercial != "nouveau",
-    ).all()
-
-    # Also include top targets that are still "nouveau"
-    from app.models.insight import Insight
-    top_nouveaux = (
-        db.query(Agence)
-        .join(Insight)
-        .filter(Agence.statut_commercial.in_(["nouveau", None]))
-        .filter(Insight.score_besoin >= 50)
-        .order_by(Insight.score_besoin.desc())
-        .limit(20)
-        .all()
-    )
-
-    all_agences = {a.id: a for a in list(agences) + list(top_nouveaux)}
-
-    columns = {}
-    for a in all_agences.values():
-        statut = a.statut_commercial or "nouveau"
-        if statut not in columns:
-            columns[statut] = []
-        columns[statut].append({
-            "id": str(a.id),
-            "nom": a.nom,
-            "ville": a.ville,
-            "dirigeant_nom": a.dirigeant_nom,
-            "telephone": a.telephone,
-            "nb_lots_geres": a.nb_lots_geres,
-            "nb_appels": len(a.appels) if a.appels else 0,
-            "dernier_appel": a.appels[-1]["date"] if a.appels else None,
-        })
-
-    return columns
 
 
 @router.get("/{agence_id}/snapshots")

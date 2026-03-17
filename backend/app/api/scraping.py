@@ -61,7 +61,14 @@ def _run_full_pipeline(job_id: str):
 
     db = SessionLocal()
     try:
-        logger.info(f"[Pipeline] Starting job {job_id}")
+        logger.warning(f"[Pipeline] Starting job {job_id}")
+
+        # Mark as running immediately
+        job = db.get(ScrapingJob, uuid.UUID(job_id))
+        if job:
+            job.statut = JobStatut.running
+            job.started_at = datetime.now(timezone.utc)
+            db.commit()
 
         # Step 1: Collect from API
         _update_progress(db, job_id, 0, "Requêtes API recherche-entreprises.gouv.fr...")
