@@ -90,6 +90,8 @@ def list_insights(
             "agence_nb_collab": agence.nb_collaborateurs,
             "agence_note_google": agence.note_google,
             "agence_a_service_travaux": agence.a_service_travaux,
+            "agence_offres_emploi": agence.offres_emploi_detectees,
+            "agence_dirigeant": agence.dirigeant_nom,
             "score_besoin": insight.score_besoin,
             "signaux": insight.signaux,
             "ratio_lots_collab": insight.ratio_lots_collab,

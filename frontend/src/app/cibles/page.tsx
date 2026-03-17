@@ -30,6 +30,8 @@ interface InsightRow {
     fiabilite: string;
   } | null;
   recommandation: string | null;
+  agence_offres_emploi: { role: string; title: string; url: string; source: string }[] | null;
+  agence_dirigeant: string | null;
 }
 
 function ScoreBadge({ score }: { score: number }) {
@@ -59,23 +61,35 @@ function CibleCard({ row, expanded, onToggle }: { row: InsightRow; expanded: boo
   const details = signaux?.details || [];
   const missing = signaux?.donnees_manquantes || [];
   const verified = signaux?.donnees_verifiees || [];
+  const hasJobs = row.agence_offres_emploi && row.agence_offres_emploi.length > 0;
 
   return (
-    <Card className="border-l-4 border-l-orange-500">
+    <Card className={`border-l-4 ${hasJobs ? "border-l-red-500 bg-red-50/30 dark:bg-red-950/10" : "border-l-orange-500"}`}>
       {/* Header — always visible */}
       <CardHeader className="cursor-pointer" onClick={onToggle}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <ScoreBadge score={row.score_besoin} />
             <div>
-              <Link href={`/agences/${row.agence_id}`} className="text-lg font-semibold text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
-                {row.agence_nom}
-              </Link>
+              <div className="flex items-center gap-2">
+                <Link href={`/agences/${row.agence_id}`} className="text-lg font-semibold text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+                  {row.agence_nom}
+                </Link>
+                {hasJobs && (
+                  <Badge variant="destructive" className="animate-pulse text-xs">RECRUTE</Badge>
+                )}
+              </div>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Building2 className="h-3 w-3" />
                 {row.agence_ville}{row.agence_region ? `, ${row.agence_region}` : ""}
                 {row.agence_groupe && <Badge variant="outline" className="ml-1 text-xs">{row.agence_groupe}</Badge>}
+                {row.agence_dirigeant && <span className="ml-1 text-xs">• {row.agence_dirigeant}</span>}
               </div>
+              {hasJobs && (
+                <div className="mt-1 text-xs text-red-700 dark:text-red-400 font-medium">
+                  {row.agence_offres_emploi!.map(j => j.role).filter((v, i, a) => a.indexOf(v) === i).join(", ")}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -99,6 +113,31 @@ function CibleCard({ row, expanded, onToggle }: { row: InsightRow; expanded: boo
       {/* Expanded details */}
       {expanded && (
         <CardContent className="space-y-4 border-t pt-4">
+          {/* Job postings highlight */}
+          {hasJobs && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/30 rounded-lg border border-red-200 dark:border-red-900">
+              <h4 className="font-medium text-red-800 dark:text-red-300 mb-2">🔥 Offres d&apos;emploi détectées</h4>
+              <div className="space-y-2">
+                {row.agence_offres_emploi!.map((job, i) => (
+                  <div key={i} className="flex items-center justify-between text-sm">
+                    <div>
+                      <span className="font-medium">{job.title}</span>
+                      <span className="text-xs text-muted-foreground ml-2">({job.source})</span>
+                    </div>
+                    {job.url && (
+                      <a href={job.url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline shrink-0 ml-2">
+                        Voir →
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-red-700 dark:text-red-400 mt-2">
+                Cette agence recrute activement — signe de sous-effectif. C&apos;est le moment idéal pour proposer les services Monga.
+              </p>
+            </div>
+          )}
+
           {/* Raisons du score */}
           <div>
             <h4 className="font-medium mb-2">Pourquoi cette agence est une cible</h4>

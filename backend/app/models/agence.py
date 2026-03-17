@@ -49,7 +49,8 @@ class Agence(Base):
     statut_commercial: Mapped[str | None] = mapped_column(String(50), default="nouveau")
     notes_commercial: Mapped[str | None] = mapped_column(Text)
     telephone: Mapped[str | None] = mapped_column(String(30))
-    appels: Mapped[dict | None] = mapped_column(JSON)  # [{date, resume, statut_avant, statut_apres}]
+    appels: Mapped[dict | None] = mapped_column(JSON)
+    offres_emploi_detectees: Mapped[dict | None] = mapped_column(JSON)  # [{role, title, url, source}]
 
     offres = relationship("OffreEmploi", back_populates="agence")
     avis = relationship("Avis", back_populates="agence")

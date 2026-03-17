@@ -511,12 +511,29 @@ def _step_generate_insights(db: Session):
         else:
             missing.append("Nom du dirigeant (disponible via Pappers après enrichissement)")
 
+        # Signal: Offres d'emploi détectées (source: DuckDuckGo + sites agences)
+        job_postings = agence.offres_emploi_detectees
+        if job_postings and isinstance(job_postings, list) and len(job_postings) > 0:
+            score += 25  # Very strong signal
+            signaux["recrutement_actif"] = 25
+            roles_found = list(set(j.get("role", "") for j in job_postings))
+            details.append(
+                f"🔥 RECRUTEMENT ACTIF : {len(job_postings)} offre(s) détectée(s) "
+                f"({', '.join(roles_found[:3])}) — L'agence cherche à recruter, "
+                f"signe de sous-effectif = besoin immédiat d'aide Monga"
+            )
+            known["offres_emploi_detectees"] = len(job_postings)
+            # Store job details in signaux for display
+            signaux["offres_detectees"] = job_postings[:5]
+
         # Completeness score
         completeness = len(known) / (len(known) + len(missing)) if (known or missing) else 0
         signaux["completude_donnees"] = round(completeness * 100)
 
         # Generate recommendation
-        if score >= 50:
+        if job_postings and len(job_postings) > 0:
+            recommandation = "🔥 URGENT — Recrute activement, besoin immédiat pour Monga"
+        elif score >= 50:
             recommandation = "Cible prioritaire — fort potentiel pour Monga"
         elif score >= 35:
             recommandation = "Cible potentielle — à investiguer"

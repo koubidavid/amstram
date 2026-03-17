@@ -21,6 +21,7 @@ _running_task: asyncio.Task | None = None
 def _run_full_pipeline(job_id: str):
     """Run the complete pipeline: collect + RNIC + insights."""
     from app.services.scraping_service import run_scraping, _step_enrich_rnic, _step_enrich_pappers, _step_generate_insights
+    from app.services.job_scraper import scan_agency_jobs
     from app.models.insight import Insight
 
     db = SessionLocal()
@@ -35,7 +36,11 @@ def _run_full_pipeline(job_id: str):
         # Step 3: Enrich with Pappers (dirigeants, CA)
         _step_enrich_pappers(db, errors)
 
-        # Step 4: Recalculate insights with all enriched data
+        # Step 4: Scan for job postings (DuckDuckGo + agency websites)
+        # Only scan top 30 scored agencies to avoid rate limiting
+        scan_agency_jobs(db, errors)
+
+        # Step 5: Recalculate insights with all enriched data
         db.query(Insight).delete()
         db.commit()
         _step_generate_insights(db)
