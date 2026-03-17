@@ -228,10 +228,10 @@ def _step_collect_with_logs(db, errors: list, job_id: str) -> tuple[int, int]:
 
 @router.post("/lancer")
 def lancer_scraping(db: Session = Depends(get_db)):
-    """Launch full scraping pipeline SYNCHRONOUSLY.
-    The frontend fires this request and doesn't wait for the response.
-    Progress is tracked via polling GET /jobs."""
+    """Launch pipeline in a background thread. Returns immediately."""
+    import threading
     import logging
+    import traceback
     logger = logging.getLogger(__name__)
 
     # Auto-clean stuck jobs
@@ -252,15 +252,32 @@ def lancer_scraping(db: Session = Depends(get_db)):
     db.refresh(job)
     job_id = str(job.id)
 
-    logger.warning(f"[Pipeline] Running synchronously for job {job_id}")
+    def _run_in_thread():
+        try:
+            logger.warning(f"[Pipeline] Thread started for {job_id}")
+            _run_full_pipeline(job_id)
+            logger.warning(f"[Pipeline] Thread completed for {job_id}")
+        except Exception as e:
+            logger.error(f"[Pipeline] CRASH: {traceback.format_exc()}")
+            _db = SessionLocal()
+            try:
+                j = _db.get(ScrapingJob, uuid.UUID(job_id))
+                if j:
+                    j.statut = JobStatut.failed
+                    j.finished_at = datetime.now(timezone.utc)
+                    j.erreurs = {"error": str(e), "traceback": traceback.format_exc()[:500]}
+                    _db.commit()
+            finally:
+                _db.close()
 
-    # Run pipeline synchronously — blocks this HTTP request
-    # Frontend uses fire-and-forget fetch so user isn't blocked
-    _run_full_pipeline(job_id)
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    logger.warning(f"[Pipeline] Thread launched: alive={t.is_alive()}")
 
-    # Return final state
-    db.refresh(job)
-    return {"id": str(job.id), "statut": job.statut.value, "nb_agences_scrappees": job.nb_agences_scrappees}
+    return {"id": str(job.id), "statut": "running", "nb_agences_scrappees": 0,
+            "created_at": job.created_at.isoformat(), "started_at": job.started_at.isoformat(),
+            "type": "manuel", "progression": None, "erreurs": None,
+            "finished_at": None, "cron_expression": None}
 
 
 @router.get("/jobs", response_model=ScrapingJobList)

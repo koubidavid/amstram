@@ -33,8 +33,12 @@ export default function ScrapingPage() {
 
   const handleLaunch = async () => {
     setLaunching(true);
-    api.lancerScraping(); // Fire-and-forget
-    setTimeout(() => { loadJobs(); setLaunching(false); }, 2000);
+    try {
+      await api.lancerScraping();
+      loadJobs();
+    } finally {
+      setLaunching(false);
+    }
   };
 
   const getStatusBadge = (statut: string) => {
