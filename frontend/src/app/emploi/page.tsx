@@ -83,7 +83,7 @@ export default function EmploiPage() {
 
   const tabs = [
     { key: "all_matched", label: "Matchées avec nos agences", icon: Building2 },
-    { key: "france_travail", label: "France Travail", icon: Briefcase },
+    { key: "all_non_aggregator", label: "Tous (hors agrégateurs)", icon: Briefcase },
     { key: "gestionnaire locatif", label: "Gestionnaire locatif", icon: Search },
     { key: "assistant gestion locative", label: "Assistant gestion locative", icon: Search },
     { key: "gestionnaire copropriété", label: "Gestionnaire copro", icon: Search },
@@ -93,7 +93,7 @@ export default function EmploiPage() {
   const getLinksForTab = (): JobLink[] => {
     if (!data) return [];
     if (activeTab === "all_matched") return data.all_matched || [];
-    if (activeTab === "france_travail") return data.france_travail || [];
+    if (activeTab === "all_non_aggregator") return data.all_non_aggregator || [];
     return (data.by_role?.[activeTab] || []);
   };
 
@@ -153,8 +153,8 @@ export default function EmploiPage() {
                 <Badge variant="secondary" className="ml-2 text-xs">
                   {tab.key === "all_matched"
                     ? data.all_matched?.length || 0
-                    : tab.key === "france_travail"
-                    ? data.france_travail?.length || 0
+                    : tab.key === "all_non_aggregator"
+                    ? data.all_non_aggregator?.length || 0
                     : data.by_role?.[tab.key]?.length || 0}
                 </Badge>
               </Button>

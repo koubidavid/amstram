@@ -1,6 +1,8 @@
-"""Job scraper — France Travail + DuckDuckGo reverse search + direct website scan."""
+"""Job scraper — Google (Serper.dev) + France Travail + direct website scan."""
 import logging
+import os
 import re
+import time
 from urllib.parse import unquote
 
 import httpx
@@ -11,6 +13,8 @@ from app.models.agence import Agence
 
 logger = logging.getLogger(__name__)
 
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
+
 TARGET_ROLES = [
     "gestionnaire locatif",
     "assistant gestion locative",
@@ -19,14 +23,6 @@ TARGET_ROLES = [
 ]
 
 FRANCE_TRAVAIL_URL = "https://candidat.francetravail.fr/offres/recherche"
-
-# DuckDuckGo queries as fallback
-SEARCH_QUERIES = [
-    '"{role}" recrutement immobilier site:indeed.fr OR site:hellowork.com OR site:welcometothejungle.com',
-    '"{role}" offre emploi agence immobilière site:linkedin.com OR site:apec.fr OR site:cadremploi.fr',
-    '"{role}" site:recrutement.nestenn.com OR site:recrutement.foncia.com OR site:citya-immobilier.com/recrutement',
-    '"{role}" site:nexity.fr/emploi OR site:oralia.fr/recrutement OR site:sergic.com/recrutement OR site:laforet.com/recrutement',
-]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -37,6 +33,17 @@ GENERIC_WORDS = frozenset([
     "et", "en", "immobilier", "immobiliere", "immobiliers", "gestion", "syndic",
     "cabinet", "agence", "groupe", "societe", "administration", "regie",
 ])
+
+AGGREGATOR_DOMAINS = {
+    "indeed.fr", "indeed.com", "hellowork.com", "linkedin.com", "jooble.org",
+    "jobijoba.com", "cadremploi.fr", "apec.fr", "meteojob.com", "optioncarriere.com",
+    "glassdoor.fr", "glassdoor.com", "keljob.com", "randstad.fr", "manpower.fr",
+    "adecco.fr", "michaelpage.fr", "robertwalters.fr", "talent.com", "adzuna.fr",
+    "cojob.fr", "emploi.org", "regionsjob.com", "staffsante.fr", "recrutimmo.com",
+    "google.com", "google.fr", "youtube.com", "facebook.com", "wikipedia.org",
+    "pole-emploi.fr", "duckduckgo.com", "jobrapido.com", "welcometothejungle.com",
+    "monster.fr", "staffme.fr", "directemploi.com", "emploipublic.fr",
+}
 
 
 def _build_name_index(agences: list[Agence]) -> dict[str, list[Agence]]:
@@ -54,39 +61,88 @@ def _build_name_index(agences: list[Agence]) -> dict[str, list[Agence]]:
     return index
 
 
-def _match_company_to_agencies(company_name: str, name_index: dict, role: str,
-                                title: str, url: str, source: str,
-                                matched: dict) -> bool:
-    """Try to match a company name to agencies in our DB."""
-    company_lower = company_name.lower().strip()
-    if not company_lower or len(company_lower) < 3:
-        return False
-
-    for word in company_lower.split():
-        if word in GENERIC_WORDS or len(word) < 3:
-            continue
-        if word in name_index:
-            for agence in name_index[word]:
-                if agence.id not in matched:
-                    matched[agence.id] = []
-                matched[agence.id].append({
-                    "role": role,
-                    "title": title[:200],
-                    "url": url[:300],
-                    "source": source,
-                    "company_raw": company_name,
-                })
-            return True
-    return False
+def _is_aggregator(url: str) -> bool:
+    domain = re.search(r'https?://(?:www\.)?([^/]+)', url)
+    if not domain:
+        return True
+    return any(agg in domain.group(1) for agg in AGGREGATOR_DOMAINS)
 
 
-# ── Source 1: France Travail (best structured data) ──────────────────────────
+# ── Source 1: Google via Serper.dev ──────────────────────────────────────────
 
-def _scrape_france_travail(client: httpx.Client, role: str, errors: list, log_fn=None) -> list[dict]:
-    """Scrape France Travail search results for a given role. Returns list of {company, title, url, role}."""
+def _search_google(client: httpx.Client, query: str, num: int = 20) -> list[dict]:
+    """Search Google via Serper.dev API. Returns list of {title, url, snippet}."""
+    if not SERPER_API_KEY:
+        return []
+
+    try:
+        resp = client.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "gl": "fr", "hl": "fr", "num": num},
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            return []
+
+        data = resp.json()
+        results = []
+        for item in data.get("organic", []):
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+            })
+        return results
+
+    except Exception as e:
+        logger.warning(f"Serper.dev error: {e}")
+        return []
+
+
+def _search_duckduckgo(client: httpx.Client, query: str) -> list[dict]:
+    """Fallback: search DuckDuckGo."""
+    try:
+        resp = client.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers=HEADERS,
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            return []
+
+        results = []
+        raw = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.+?)</a>', resp.text)
+        snippets = re.findall(r'class="result__snippet"[^>]*>(.+?)</[at]', resp.text)
+
+        for i, (raw_url, raw_title) in enumerate(raw[:10]):
+            title = re.sub(r"<[^>]+>", "", raw_title).strip()
+            url_match = re.search(r"uddg=([^&]+)", raw_url)
+            url = unquote(url_match.group(1)) if url_match else raw_url
+            snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip() if i < len(snippets) else ""
+            results.append({"title": title, "url": url, "snippet": snippet})
+
+        return results
+    except Exception:
+        return []
+
+
+def search_engine(client: httpx.Client, query: str, num: int = 20) -> list[dict]:
+    """Search Google (Serper) if API key available, otherwise DuckDuckGo."""
+    results = _search_google(client, query, num)
+    if results:
+        return results
+    return _search_duckduckgo(client, query)
+
+
+# ── Source 2: France Travail ─────────────────────────────────────────────────
+
+def _scrape_france_travail(client: httpx.Client, role: str, errors: list) -> list[dict]:
+    """Scrape France Travail search results."""
     postings = []
 
-    for page_start in [0, 15]:  # 2 pages of 15 results
+    for page_start in [0, 15]:
         try:
             resp = client.get(
                 FRANCE_TRAVAIL_URL,
@@ -97,185 +153,101 @@ def _scrape_france_travail(client: httpx.Client, role: str, errors: list, log_fn
             if resp.status_code != 200:
                 continue
 
-            html = resp.text
+            entries = re.findall(r'<li[^>]*data-id-offre="([^"]+)"(.*?)</li>', resp.text, re.S)
 
-            # Parse job listings: each <li data-id-offre="..."> is a result
-            results = re.findall(r'<li[^>]*data-id-offre="([^"]+)"(.*?)</li>', html, re.S)
-
-            for offre_id, block in results:
-                # Title
-                title_match = re.search(r'<h2[^>]*>(.*?)</h2>', block, re.S)
-                title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else ""
-
-                # Company — in the subtext area
-                # France Travail puts company name in a specific location in each card
-                company = ""
-                # Try: text after location, typically "VILLE - COMPANY" or just "COMPANY"
-                subtext = re.search(r'class="[^"]*subtext[^"]*"[^>]*>(.*?)<', block, re.S)
-                if subtext:
-                    company = re.sub(r'<[^>]+>', '', subtext.group(1)).strip()
-
-                # Also try: any standalone text that looks like a company name
-                if not company:
-                    spans = re.findall(r'<span[^>]*>([^<]{3,50})</span>', block)
-                    for s in spans:
-                        s = s.strip()
-                        if s and not any(kw in s.lower() for kw in ["publi", "cdd", "cdi", "jour", "mois", "€", "h/"]):
-                            company = s
-                            break
-
-                # Description snippet for matching
-                desc = re.search(r'class="description"[^>]*>(.*?)<', block, re.S)
-                desc_text = re.sub(r'<[^>]+>', '', desc.group(1)).strip()[:200] if desc else ""
-
-                url = f"https://candidat.francetravail.fr/offres/recherche/detail/{offre_id}"
+            for offre_id, block in entries:
+                title_m = re.search(r'<h2[^>]*>(.*?)</h2>', block, re.S)
+                title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+                desc_m = re.search(r'class="description"[^>]*>(.*?)<', block, re.S)
+                desc = re.sub(r'<[^>]+>', '', desc_m.group(1)).strip()[:200] if desc_m else ""
 
                 postings.append({
-                    "company": company,
                     "title": title,
-                    "url": url,
+                    "url": f"https://candidat.francetravail.fr/offres/recherche/detail/{offre_id}",
+                    "snippet": desc,
                     "role": role,
-                    "desc": desc_text,
+                    "source": "France Travail",
                 })
 
         except Exception as e:
-            errors.append(f"France Travail '{role}' p{page_start}: {str(e)[:80]}")
+            errors.append(f"France Travail '{role}': {str(e)[:80]}")
 
     return postings
 
 
-# ── Source 2: DuckDuckGo reverse search ──────────────────────────────────────
-
-def _search_duckduckgo_reverse(client: httpx.Client, role: str, errors: list) -> list[dict]:
-    """Search DuckDuckGo for job postings for a given role."""
-    import time
-    postings = []
-
-    for query_tpl in SEARCH_QUERIES:
-        query = query_tpl.format(role=role)
-        try:
-            resp = client.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                headers=HEADERS,
-                timeout=10.0,
-            )
-            if resp.status_code != 200:
-                continue
-
-            results = re.findall(
-                r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.+?)</a>',
-                resp.text,
-            )
-
-            for raw_url, raw_title in results[:8]:
-                title = re.sub(r"<[^>]+>", "", raw_title).strip()
-                url_match = re.search(r"uddg=([^&]+)", raw_url)
-                url = unquote(url_match.group(1)) if url_match else raw_url
-
-                postings.append({
-                    "company": "",  # Will try to extract from title
-                    "title": title,
-                    "url": url,
-                    "role": role,
-                    "desc": "",
-                })
-
-            time.sleep(1.5)
-
-        except Exception as e:
-            errors.append(f"DuckDuckGo '{role}': {str(e)[:80]}")
-
-    return postings
-
-
-# ── Main function ────────────────────────────────────────────────────────────
+# ── Main: reverse search ────────────────────────────────────────────────────
 
 def scan_jobs_reverse(db: Session, errors: list, log_fn=None) -> int:
-    """Reverse job search: France Travail + DuckDuckGo, then match to agencies."""
-    import time
-
+    """Reverse search: Google/DDG + France Travail, then match to agencies."""
     agences = db.query(Agence).filter(Agence.siren.isnot(None)).all()
     if not agences:
         return 0
 
     name_index = _build_name_index(agences)
+    source = "Google (Serper)" if SERPER_API_KEY else "DuckDuckGo"
 
     if log_fn:
-        log_fn(f"Index de {len(agences)} agences. Recherche sur France Travail + DuckDuckGo...", "search")
+        log_fn(f"Index de {len(agences)} agences. Recherche via {source} + France Travail...", "search")
 
     all_postings: list[dict] = []
     matched_agencies: dict[int, list[dict]] = {}
 
     with httpx.Client(timeout=12.0, follow_redirects=True) as client:
         for role in TARGET_ROLES:
-            # France Travail (primary — best data)
-            ft_postings = _scrape_france_travail(client, role, errors, log_fn)
-            all_postings.extend(ft_postings)
+            # Google/DuckDuckGo search
+            queries = [
+                f'offre emploi "{role}" agence immobilière recrutement',
+                f'"{role}" recrute CDI immobilier 2026',
+            ]
+
+            role_count = 0
+            for query in queries:
+                results = search_engine(client, query, num=30)
+                for r in results:
+                    r["role"] = role
+                    r["source"] = source
+                    all_postings.append(r)
+                    role_count += 1
+                time.sleep(1)
 
             if log_fn:
-                log_fn(f"France Travail « {role} » — {len(ft_postings)} offres", "search", count=len(ft_postings))
+                log_fn(f"{source} « {role} » — {role_count} résultats", "search", count=role_count)
 
             time.sleep(1)
 
-            # DuckDuckGo (secondary — broader but less structured)
-            ddg_postings = _search_duckduckgo_reverse(client, role, errors)
-            all_postings.extend(ddg_postings)
-
-            if log_fn:
-                log_fn(f"DuckDuckGo « {role} » — {len(ddg_postings)} résultats", "search", count=len(ddg_postings))
-
     if log_fn:
-        log_fn(f"{len(all_postings)} offres collectées. Matching avec les agences...", "database")
+        log_fn(f"{len(all_postings)} résultats collectés. Matching avec les agences...", "database")
 
-    # Match postings to agencies
+    # Match to agencies
     for posting in all_postings:
-        company = posting.get("company", "")
-        title = posting.get("title", "")
+        title_lower = (posting.get("title", "") + " " + posting.get("snippet", "")).lower()
 
-        # Try matching company name first
-        if company:
-            _match_company_to_agencies(
-                company, name_index, posting["role"],
-                posting["title"], posting["url"], "France Travail",
-                matched_agencies,
-            )
-
-        # Also try matching words from the title (for DuckDuckGo results)
-        title_lower = title.lower()
-        is_job = any(kw in title_lower for kw in [
-            "recrutement", "emploi", "offre", "poste", "recrute",
-            "cdi", "cdd", "gestionnaire", "assistant", "copropriété", "locatif",
-            "h/f", "f/h",
-        ])
-        if is_job:
-            for word in title_lower.split():
-                if word in GENERIC_WORDS or len(word) < 4:
+        for word, agency_list in name_index.items():
+            if word in title_lower:
+                is_job = any(kw in title_lower for kw in [
+                    "recrutement", "emploi", "offre", "poste", "recrute",
+                    "cdi", "cdd", "gestionnaire", "assistant", "copropriété", "locatif",
+                    "h/f", "f/h",
+                ])
+                if not is_job:
                     continue
-                if word in name_index:
-                    for agence in name_index[word]:
-                        if agence.id not in matched_agencies:
-                            matched_agencies[agence.id] = []
-                        matched_agencies[agence.id].append({
-                            "role": posting["role"],
-                            "title": title[:200],
-                            "url": posting["url"],
-                            "source": "DuckDuckGo",
-                        })
 
-    # Save results
+                for agence in agency_list:
+                    if agence.id not in matched_agencies:
+                        matched_agencies[agence.id] = []
+                    matched_agencies[agence.id].append({
+                        "role": posting.get("role", ""),
+                        "title": posting.get("title", "")[:200],
+                        "url": posting.get("url", "")[:300],
+                        "source": posting.get("source", ""),
+                    })
+
+    # Save
     found = 0
     for agence in agences:
         findings = matched_agencies.get(agence.id, [])
-
-        # Deduplicate
         seen = set()
-        unique = []
-        for f in findings:
-            key = f["title"][:50]
-            if key not in seen:
-                seen.add(key)
-                unique.append(f)
+        unique = [f for f in findings if not (f["title"][:50] in seen or seen.add(f["title"][:50]))]
 
         if agence.offres_emploi_detectees is None:
             agence.offres_emploi_detectees = unique if unique else []
@@ -284,20 +256,89 @@ def scan_jobs_reverse(db: Session, errors: list, log_fn=None) -> int:
             found += 1
             if log_fn:
                 roles = list(set(f["role"] for f in unique))
-                log_fn(
-                    f"🔥 {agence.nom} — {len(unique)} offre(s) ({', '.join(roles[:2])})",
-                    "fire", count=found,
-                )
+                log_fn(f"🔥 {agence.nom} — {len(unique)} offre(s) ({', '.join(roles[:2])})", "fire", count=found)
 
     db.commit()
 
     if log_fn:
-        log_fn(
-            f"Résultat : {found} agence(s) recrutent sur {len(agences)} en base",
-            "success" if found > 0 else "info", count=found,
-        )
+        log_fn(f"Résultat : {found} agence(s) recrutent sur {len(agences)} en base", "success" if found > 0 else "info", count=found)
 
     return found
+
+
+# ── Live search (for /emploi page) ──────────────────────────────────────────
+
+def live_search_jobs(db: Session) -> dict:
+    """Live search: returns all links found, grouped by role, with agency matching."""
+    agences = db.query(Agence).filter(Agence.siren.isnot(None)).all()
+    name_index = _build_name_index(agences)
+    source = "Google" if SERPER_API_KEY else "DuckDuckGo"
+
+    all_links = []
+    by_role = {}
+    ft_links = []
+
+    with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+        for role in TARGET_ROLES:
+            role_links = []
+
+            # Search engine
+            queries = [
+                f'offre emploi "{role}" agence immobilière',
+                f'"{role}" recrute CDI immobilier',
+                f'"{role}" recrutement agence',
+            ]
+            for query in queries:
+                results = search_engine(client, query, num=20)
+                for r in results:
+                    matched_agency = _find_agency_match(r, name_index, agences)
+                    link = {
+                        "title": r["title"][:150],
+                        "url": r["url"][:300],
+                        "snippet": r.get("snippet", "")[:200],
+                        "domain": _extract_domain(r["url"]),
+                        "is_aggregator": _is_aggregator(r["url"]),
+                        "matched_agency": matched_agency,
+                        "role": role,
+                        "source": source,
+                    }
+                    role_links.append(link)
+                    all_links.append(link)
+                time.sleep(1)
+
+            by_role[role] = role_links
+            time.sleep(1)
+
+    # Filter and categorize
+    agency_links = [l for l in all_links if not l["is_aggregator"]]
+    matched_links = [l for l in all_links if l["matched_agency"]]
+
+    return {
+        "total_links": len(all_links),
+        "agency_links": len(agency_links),
+        "matched_to_db": len(matched_links),
+        "search_engine": source,
+        "by_role": {role: [l for l in links] for role, links in by_role.items()},
+        "all_matched": matched_links,
+        "all_non_aggregator": agency_links,
+    }
+
+
+def _find_agency_match(result: dict, name_index: dict, agences: list) -> str | None:
+    text = (result.get("title", "") + " " + result.get("snippet", "")).lower()
+    for a in agences:
+        words = a.nom.lower().split()
+        for word in words:
+            if word in GENERIC_WORDS or len(word) < 4:
+                continue
+            if word in text:
+                return a.nom
+    return None
+
+
+def _extract_domain(url: str) -> str:
+    m = re.search(r'https?://(?:www\.)?([^/]+)', url)
+    return m.group(1) if m else ""
 
 
 # ── Direct website scanning ──────────────────────────────────────────────────
@@ -310,8 +351,7 @@ CAREER_PATHS = [
 
 
 def scan_agency_websites(db: Session, errors: list, log_fn=None) -> int:
-    """Scan agency websites directly for career pages mentioning target roles."""
-
+    """Scan agency websites directly for career pages."""
     agences = (
         db.query(Agence)
         .filter(Agence.site_web.isnot(None), Agence.site_web != "")
@@ -340,10 +380,7 @@ def scan_agency_websites(db: Session, errors: list, log_fn=None) -> int:
                 found += 1
                 roles = list(set(f["role"] for f in site_findings))
                 if log_fn:
-                    log_fn(
-                        f"🔥 {agence.nom} — offre(s) sur leur site ({', '.join(roles[:2])})",
-                        "fire", count=found,
-                    )
+                    log_fn(f"🔥 {agence.nom} — offre(s) sur leur site ({', '.join(roles[:2])})", "fire", count=found)
 
             if (i + 1) % 10 == 0 and log_fn:
                 log_fn(f"Sites scannés : {i+1}/{len(agences)}, {found} avec offres", "search")
@@ -351,16 +388,12 @@ def scan_agency_websites(db: Session, errors: list, log_fn=None) -> int:
     db.commit()
 
     if log_fn:
-        log_fn(
-            f"Scan sites terminé : {found} agence(s) avec offres",
-            "success" if found > 0 else "info", count=found,
-        )
+        log_fn(f"Scan sites terminé : {found} agence(s) avec offres", "success" if found > 0 else "info", count=found)
 
     return found
 
 
 def _scan_one_website(client: httpx.Client, site_web: str, agence_nom: str, errors: list) -> list[dict]:
-    """Scan a single agency website for career pages."""
     findings = []
     base_url = site_web if site_web.startswith("http") else f"https://{site_web}"
 
@@ -384,7 +417,6 @@ def _scan_one_website(client: httpx.Client, site_web: str, agence_nom: str, erro
 
             if findings:
                 break
-
         except Exception:
             continue
 
