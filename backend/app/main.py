@@ -35,3 +35,11 @@ app.include_router(export_router)
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.post("/api/admin/reset-db")
+def reset_db():
+    """Drop and recreate all tables. Use with caution."""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    return {"status": "tables recreated"}
