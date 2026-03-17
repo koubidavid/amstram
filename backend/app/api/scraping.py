@@ -353,15 +353,38 @@ def test_thread():
 
 @router.get("/test-pipeline")
 def test_pipeline():
-    """Debug: run just step 1 (collect) synchronously and return result."""
+    """Debug: run step 1 synchronously with the same code path as the thread."""
     db = SessionLocal()
     try:
-        from app.services.scraping_service import _step_collect
+        # Test the exact same imports and function the thread uses
+        from app.services.scraping_service import _step_collect, SEARCH_TERMS, NAF_CODES, GOV_API, _upsert_agence
+        from app.services.job_scraper import _search_duckduckgo, _scan_agency_website, TARGET_ROLES
+
+        # Create a test job
+        job = ScrapingJob(type=JobType.manuel, statut=JobStatut.running)
+        job.started_at = datetime.now(timezone.utc)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = str(job.id)
+
+        # Test _log_activity
+        _log_activity(db, job_id, 0, "Test: pipeline started", "info")
+
+        # Test collect with logs
         errors = []
-        new, updated = _step_collect(db, errors)
-        return {"new": new, "updated": updated, "errors": errors[:5]}
+        new, updated = _step_collect_with_logs(db, errors, job_id)
+
+        # Mark done
+        job.statut = JobStatut.done
+        job.finished_at = datetime.now(timezone.utc)
+        job.nb_agences_scrappees = new + updated
+        db.commit()
+
+        return {"new": new, "updated": updated, "errors": errors[:5], "job_id": job_id, "logs": len(_activity_logs)}
     except Exception as e:
-        return {"error": str(e)}
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
     finally:
         db.close()
 
