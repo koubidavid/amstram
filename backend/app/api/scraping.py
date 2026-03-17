@@ -278,11 +278,12 @@ def _scan_jobs_with_logs(db, errors: list, job_id: str) -> int:
     return found
 
 
-@router.post("/lancer", response_model=ScrapingJobRead)
+@router.post("/lancer")
 def lancer_scraping(db: Session = Depends(get_db)):
-    """Launch full scraping pipeline in background thread."""
+    """Launch full scraping pipeline. Fire-and-forget via fetch, runs synchronously."""
     import threading
     import logging
+    import traceback
     logger = logging.getLogger(__name__)
 
     # Auto-clean stuck jobs
@@ -296,26 +297,39 @@ def lancer_scraping(db: Session = Depends(get_db)):
     if stuck_jobs:
         db.commit()
 
-    job = ScrapingJob(type=JobType.manuel, statut=JobStatut.pending)
+    job = ScrapingJob(type=JobType.manuel, statut=JobStatut.running)
+    job.started_at = datetime.now(timezone.utc)
     db.add(job)
     db.commit()
     db.refresh(job)
-
     job_id = str(job.id)
 
     def _run_in_thread():
+        _db = SessionLocal()
         try:
             logger.warning(f"[Pipeline] Thread started for job {job_id}")
             _run_full_pipeline(job_id)
-            logger.warning(f"[Pipeline] Thread completed for job {job_id}")
         except Exception as e:
-            logger.error(f"[Pipeline] Thread crashed: {e}", exc_info=True)
+            logger.error(f"[Pipeline] Thread CRASHED: {traceback.format_exc()}")
+            # Save error to job so it's visible in the UI
+            j = _db.get(ScrapingJob, uuid.UUID(job_id))
+            if j:
+                j.statut = JobStatut.failed
+                j.finished_at = datetime.now(timezone.utc)
+                j.erreurs = {"error": str(e), "traceback": traceback.format_exc()[:500]}
+                _db.commit()
+        finally:
+            _db.close()
 
     t = threading.Thread(target=_run_in_thread, daemon=True)
     t.start()
-    logger.warning(f"[Pipeline] Thread launched: alive={t.is_alive()}")
+    logger.warning(f"[Pipeline] Thread launched: alive={t.is_alive()}, name={t.name}")
 
-    return job
+    # Return immediately — job is already "running"
+    return {"id": str(job.id), "statut": job.statut.value, "created_at": job.created_at.isoformat(),
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "type": job.type.value, "nb_agences_scrappees": 0, "progression": None,
+            "erreurs": None, "finished_at": None, "cron_expression": None}
 
 
 @router.get("/jobs", response_model=ScrapingJobList)
