@@ -141,6 +141,17 @@ def lancer_scraping(db: Session = Depends(get_db)):
     import logging
     logger = logging.getLogger(__name__)
 
+    # Auto-clean stuck jobs (pending/running without progress for too long)
+    stuck_jobs = db.query(ScrapingJob).filter(
+        ScrapingJob.statut.in_([JobStatut.pending, JobStatut.running])
+    ).all()
+    for sj in stuck_jobs:
+        sj.statut = JobStatut.failed
+        sj.finished_at = datetime.now(timezone.utc)
+        sj.erreurs = {"info": "Auto-nettoyé (bloqué)"}
+    if stuck_jobs:
+        db.commit()
+
     job = ScrapingJob(type=JobType.manuel, statut=JobStatut.pending)
     db.add(job)
     db.commit()
