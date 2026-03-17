@@ -1,7 +1,8 @@
-"""Scraping service — collects agencies from govt API, enriches with RNIC, computes insights."""
+"""Scraping service — collects agencies, enriches with RNIC + Pappers, computes insights."""
 import csv
 import io
 import logging
+import os
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -180,6 +181,66 @@ def _step_collect(db: Session, errors: list) -> tuple[int, int]:
 # ─── Step 2: Enrich with RNIC (Registre National des Copropriétés) ───────────
 
 RNIC_CSV_URL = "https://static.data.gouv.fr/resources/registre-national-dimmatriculation-des-coproprietes/20260105-114009/rnc-data-gouv-with-qpv.csv"
+
+
+PAPPERS_API_KEY = os.environ.get("PAPPERS_API_KEY", "")
+
+
+def _step_enrich_pappers(db: Session, errors: list) -> int:
+    """Enrich agencies with Pappers data: dirigeant, CA, date creation, forme juridique."""
+    if not PAPPERS_API_KEY:
+        errors.append("Pappers: clé API non configurée (env var PAPPERS_API_KEY)")
+        return 0
+
+    agences = db.query(Agence).filter(
+        Agence.siren.isnot(None), Agence.siren != "",
+        Agence.dirigeant_nom.is_(None),  # Only enrich if not already done
+    ).all()
+
+    if not agences:
+        return 0
+
+    matched = 0
+    with httpx.Client(timeout=15.0) as client:
+        for agence in agences:
+            try:
+                resp = client.get("https://api.pappers.fr/v2/entreprise", params={
+                    "api_token": PAPPERS_API_KEY,
+                    "siren": agence.siren,
+                })
+                if resp.status_code != 200:
+                    continue
+
+                data = resp.json()
+
+                # Dirigeant
+                reps = data.get("representants", [])
+                if reps:
+                    agence.dirigeant_nom = reps[0].get("nom_complet", "")
+                    agence.dirigeant_qualite = reps[0].get("qualite", "")
+
+                # Finances
+                finances = data.get("finances", [])
+                if finances and isinstance(finances, list) and finances:
+                    agence.chiffre_affaires = finances[0].get("chiffre_affaires")
+                    agence.resultat_net = finances[0].get("resultat")
+
+                # Metadata
+                agence.date_creation = data.get("date_creation", "")
+                agence.forme_juridique = data.get("forme_juridique", "")
+                agence.effectif_precise = data.get("effectif", "")
+
+                # Website if available
+                if not agence.site_web and data.get("siege", {}).get("site_web"):
+                    agence.site_web = data["siege"]["site_web"]
+
+                matched += 1
+
+            except Exception:
+                continue
+
+    db.commit()
+    return matched
 
 
 def _step_enrich_rnic(db: Session, errors: list) -> int:
@@ -415,6 +476,40 @@ def _step_generate_insights(db: Session):
                 score += 10
                 signaux["nb_coproprietes"] = 10
                 details.append(f"✓ Gère {agence.nb_coproprietes} copropriétés (source: RNIC) — portefeuille important")
+
+        # Signal: Pappers — CA élevé (source: Pappers/INPI)
+        if agence.chiffre_affaires is not None:
+            known["chiffre_affaires"] = agence.chiffre_affaires
+            if agence.chiffre_affaires >= 5_000_000:
+                score += 15
+                signaux["ca_eleve"] = 15
+                details.append(f"✓ CA de {agence.chiffre_affaires:,.0f}€ (source: Pappers/INPI) — agence de grande envergure, budget travaux conséquent")
+            elif agence.chiffre_affaires >= 1_000_000:
+                score += 10
+                signaux["ca_eleve"] = 10
+                details.append(f"✓ CA de {agence.chiffre_affaires:,.0f}€ (source: Pappers/INPI) — agence bien établie")
+        else:
+            missing.append("Chiffre d'affaires (disponible via Pappers après enrichissement)")
+
+        # Signal: Pappers — ancienneté (source: Pappers/INPI)
+        if agence.date_creation:
+            known["date_creation"] = agence.date_creation
+            try:
+                year = int(agence.date_creation[:4])
+                age = datetime.now().year - year
+                if age >= 10:
+                    score += 5
+                    signaux["anciennete"] = 5
+                    details.append(f"✓ Créée en {year} ({age} ans d'activité) (source: Pappers) — agence établie avec historique de travaux")
+            except (ValueError, TypeError):
+                pass
+
+        # Signal: Pappers — dirigeant identifié
+        if agence.dirigeant_nom:
+            known["dirigeant"] = agence.dirigeant_nom
+            details.append(f"✓ Dirigeant identifié : {agence.dirigeant_nom} ({agence.dirigeant_qualite or 'fonction non précisée'}) (source: Pappers)")
+        else:
+            missing.append("Nom du dirigeant (disponible via Pappers après enrichissement)")
 
         # Completeness score
         completeness = len(known) / (len(known) + len(missing)) if (known or missing) else 0

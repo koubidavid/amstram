@@ -5,7 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, ExternalLink, AlertTriangle, CheckCircle, HelpCircle } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { ArrowLeft, ExternalLink, CheckCircle, HelpCircle, User, DollarSign, Calendar, Save } from "lucide-react";
 import { ScoreGauge } from "@/components/charts/score-gauge";
 import { api } from "@/lib/api";
 import type { Agence, InsightRead } from "@/lib/types";
@@ -29,18 +30,47 @@ function DataField({ label, value, source }: { label: string; value: string | nu
   );
 }
 
+const STATUTS = [
+  { value: "nouveau", label: "Nouveau", color: "bg-gray-100 text-gray-800" },
+  { value: "a_contacter", label: "À contacter", color: "bg-blue-100 text-blue-800" },
+  { value: "contacte", label: "Contacté", color: "bg-yellow-100 text-yellow-800" },
+  { value: "interesse", label: "Intéressé", color: "bg-green-100 text-green-800" },
+  { value: "en_negociation", label: "En négociation", color: "bg-purple-100 text-purple-800" },
+  { value: "client", label: "Client", color: "bg-emerald-100 text-emerald-800" },
+  { value: "pas_interesse", label: "Pas intéressé", color: "bg-red-100 text-red-800" },
+];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default function AgenceDetailPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
-  const [agence, setAgence] = useState<Agence | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [agence, setAgence] = useState<any>(null);
   const [insights, setInsights] = useState<InsightRead[]>([]);
+  const [notes, setNotes] = useState("");
+  const [statut, setStatut] = useState("nouveau");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!id) return;
-    api.getAgence(id).then(setAgence).catch(console.error);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    api.getAgence(id).then((a: any) => {
+      setAgence(a);
+      setNotes(a.notes_commercial || "");
+      setStatut(a.statut_commercial || "nouveau");
+    }).catch(console.error);
     api.getAgenceInsightsHistorique(id).then(setInsights).catch(console.error);
   }, [id]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateCommercial(id, { statut_commercial: statut, notes_commercial: notes });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (!agence) return <div className="p-8">Chargement...</div>;
 
@@ -53,7 +83,6 @@ export default function AgenceDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Navigation */}
       <Button variant="ghost" onClick={() => router.back()} className="gap-2 -ml-2">
         <ArrowLeft className="h-4 w-4" /> Retour
       </Button>
@@ -68,7 +97,7 @@ export default function AgenceDetailPage() {
           </p>
           {agence.adresse && <p className="text-sm text-muted-foreground mt-1">{agence.adresse}</p>}
           {agence.site_web && (
-            <a href={agence.site_web} target="_blank" rel="noopener noreferrer"
+            <a href={agence.site_web.startsWith("http") ? agence.site_web : `https://${agence.site_web}`} target="_blank" rel="noopener noreferrer"
                className="text-sm text-primary hover:underline flex items-center gap-1 mt-1">
               {agence.site_web} <ExternalLink className="h-3 w-3" />
             </a>
@@ -77,6 +106,37 @@ export default function AgenceDetailPage() {
         {latestInsight && <ScoreGauge score={latestInsight.score_besoin} size="lg" />}
       </div>
 
+      {/* Commercial tracking */}
+      <Card className="border-2 border-primary/20">
+        <CardHeader>
+          <CardTitle>Suivi commercial</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex gap-2 flex-wrap">
+            {STATUTS.map((s) => (
+              <button
+                key={s.value}
+                onClick={() => setStatut(s.value)}
+                className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  statut === s.value ? `${s.color} ring-2 ring-offset-1 ring-primary` : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Notes du commercial (observations après appel, rdv, etc.)..."
+            className="w-full min-h-[80px] rounded-md border px-3 py-2 text-sm"
+          />
+          <Button onClick={handleSave} disabled={saving} size="sm">
+            <Save className="mr-2 h-4 w-4" /> {saving ? "Sauvegarde..." : "Sauvegarder"}
+          </Button>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Données vérifiées */}
         <Card>
@@ -84,47 +144,34 @@ export default function AgenceDetailPage() {
             <CardTitle className="flex items-center gap-2">
               <CheckCircle className="h-5 w-5 text-green-600" /> Données vérifiées
             </CardTitle>
-            <p className="text-xs text-muted-foreground">Source: API INSEE / recherche-entreprises.api.gouv.fr</p>
           </CardHeader>
           <CardContent>
             <DataField label="Nom complet" value={agence.nom} source="INSEE" />
+            <DataField label="SIREN" value={agence.siren} source="INSEE" />
             <DataField label="Adresse" value={agence.adresse} source="INSEE" />
-            <DataField label="Code postal" value={agence.code_postal} source="INSEE" />
             <DataField label="Ville" value={agence.ville} source="INSEE" />
-            <DataField label="Région" value={agence.region} source="INSEE" />
-            <DataField label="Groupe" value={agence.groupe || null} source="Détection auto" />
-            <DataField label="Nombre de collaborateurs" value={agence.nb_collaborateurs} source="INSEE (tranche)" />
-            <DataField label="Activité" value="Administration d'immeubles / Agence immobilière" source="Code NAF" />
+            <DataField label="Collaborateurs (tranche)" value={agence.nb_collaborateurs} source="INSEE" />
+            {agence.effectif_precise && <DataField label="Effectif précis" value={agence.effectif_precise} source="Pappers" />}
+            <DataField label="Nombre de lots gérés" value={agence.nb_lots_geres} source="RNIC" />
+            {agence.nb_coproprietes > 0 && <DataField label="Copropriétés gérées" value={agence.nb_coproprietes} source="RNIC" />}
           </CardContent>
         </Card>
 
-        {/* Données à vérifier */}
+        {/* Données Pappers */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <HelpCircle className="h-5 w-5 text-orange-500" /> À vérifier par le commercial
+              <User className="h-5 w-5 text-blue-600" /> Informations Pappers
             </CardTitle>
-            <p className="text-xs text-muted-foreground">Ces informations ne sont pas disponibles via les APIs publiques</p>
+            <p className="text-xs text-muted-foreground">Source: Pappers.fr / INPI / BODACC</p>
           </CardHeader>
           <CardContent>
-            <DataField label="Nombre de lots gérés" value={agence.nb_lots_geres} />
-            <DataField label="Note Google" value={agence.note_google ? `${agence.note_google}/5` : null} />
-            <DataField label="Nombre d'avis Google" value={agence.nb_avis_google} />
-            <DataField label="Note Trustpilot" value={agence.note_trustpilot ? `${agence.note_trustpilot}/5` : null} />
-            <DataField label="Service travaux interne" value={agence.a_service_travaux ? "Oui (détecté dans le nom)" : null} />
-            <DataField label="Site web" value={agence.site_web || null} />
-
-            <div className="mt-4 p-3 bg-orange-50 dark:bg-orange-950 rounded-lg">
-              <p className="text-sm font-medium text-orange-800 dark:text-orange-200 mb-2">Actions recommandées :</p>
-              <ul className="text-sm text-orange-700 dark:text-orange-300 space-y-1">
-                {missingData.map((item, i) => (
-                  <li key={i} className="flex items-start gap-1">
-                    <span className="mt-0.5">•</span> {item}
-                  </li>
-                ))}
-                {missingData.length === 0 && <li>Toutes les données sont disponibles</li>}
-              </ul>
-            </div>
+            <DataField label="Dirigeant" value={agence.dirigeant_nom ? `${agence.dirigeant_nom} (${agence.dirigeant_qualite || ""})` : null} source="Pappers" />
+            <DataField label="Chiffre d'affaires" value={agence.chiffre_affaires ? `${(agence.chiffre_affaires as number).toLocaleString("fr-FR")} €` : null} source="Pappers" />
+            <DataField label="Résultat net" value={agence.resultat_net !== null && agence.resultat_net !== undefined ? `${(agence.resultat_net as number).toLocaleString("fr-FR")} €` : null} source="Pappers" />
+            <DataField label="Date de création" value={agence.date_creation} source="Pappers" />
+            <DataField label="Forme juridique" value={agence.forme_juridique} source="Pappers" />
+            <DataField label="Site web" value={agence.site_web || null} source={agence.site_web ? "Pappers" : undefined} />
           </CardContent>
         </Card>
       </div>
@@ -134,10 +181,8 @@ export default function AgenceDetailPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <AlertTriangle className="h-5 w-5" /> Analyse Monga — Potentiel commercial
-              </CardTitle>
-              <Badge variant={latestInsight.score_besoin >= 30 ? "default" : "secondary"}>
+              <CardTitle>Analyse Monga — Potentiel commercial</CardTitle>
+              <Badge variant={latestInsight.score_besoin >= 50 ? "default" : "secondary"}>
                 {latestInsight.recommandation}
               </Badge>
             </div>
@@ -146,60 +191,54 @@ export default function AgenceDetailPage() {
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* Signaux détectés */}
             <div>
               <h4 className="font-medium mb-2">Signaux détectés</h4>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {details.map((detail: string, i: number) => (
-                  <div key={i} className={`flex items-start gap-2 text-sm p-2 rounded ${
-                    detail.startsWith("✓")
-                      ? "bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200"
-                      : "bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400"
+                  <div key={i} className={`text-sm p-2 rounded ${
+                    detail.startsWith("✓") ? "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-200"
+                    : detail.startsWith("○") ? "bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400"
+                    : "bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-200"
                   }`}>
                     {detail}
                   </div>
                 ))}
-                {details.length === 0 && (
-                  <p className="text-sm text-muted-foreground">Aucun signal détecté — données insuffisantes</p>
-                )}
               </div>
             </div>
 
-            {/* Score breakdown */}
             {signaux.scores && (
               <div>
                 <h4 className="font-medium mb-2">Décomposition du score</h4>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {Object.entries(signaux.scores as Record<string, number>).map(([key, val]) => (
-                    <div key={key} className="text-center p-3 bg-muted/50 rounded-lg">
-                      <p className="text-2xl font-bold">{typeof val === 'number' ? (key === 'completude_donnees' ? `${val}%` : `+${val}`) : val}</p>
-                      <p className="text-xs text-muted-foreground">{key.replace(/_/g, " ")}</p>
-                    </div>
-                  ))}
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(signaux.scores as Record<string, number>)
+                    .filter(([key]) => key !== "completude_donnees")
+                    .sort(([, a], [, b]) => (b as number) - (a as number))
+                    .map(([key, val]) => (
+                      <div key={key} className={`text-center px-3 py-1.5 rounded-lg text-sm ${
+                        (val as number) > 0 ? "bg-green-100 dark:bg-green-950 text-green-800 dark:text-green-300 font-medium" : "bg-gray-100 dark:bg-gray-900 text-gray-500"
+                      }`}>
+                        +{val as number} {key.replace(/_/g, " ")}
+                      </div>
+                    ))}
                 </div>
               </div>
             )}
 
-            {/* Verified vs missing */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <h4 className="font-medium mb-1 text-green-700 dark:text-green-400">Données vérifiées ({verifiedData.length})</h4>
+                <h4 className="font-medium mb-1 text-green-700 dark:text-green-400 flex items-center gap-1">
+                  <CheckCircle className="h-4 w-4" /> Vérifié ({verifiedData.length})
+                </h4>
                 <ul className="text-sm space-y-0.5">
-                  {verifiedData.map((d, i) => (
-                    <li key={i} className="flex items-center gap-1 text-green-600 dark:text-green-400">
-                      <CheckCircle className="h-3 w-3" /> {d.replace(/_/g, " ")}
-                    </li>
-                  ))}
+                  {verifiedData.map((d, i) => <li key={i} className="text-green-600">{d.replace(/_/g, " ")}</li>)}
                 </ul>
               </div>
               <div>
-                <h4 className="font-medium mb-1 text-orange-700 dark:text-orange-400">Données manquantes ({missingData.length})</h4>
+                <h4 className="font-medium mb-1 text-orange-700 dark:text-orange-400 flex items-center gap-1">
+                  <HelpCircle className="h-4 w-4" /> À vérifier ({missingData.length})
+                </h4>
                 <ul className="text-sm space-y-0.5">
-                  {missingData.map((d, i) => (
-                    <li key={i} className="flex items-center gap-1 text-orange-600 dark:text-orange-400">
-                      <HelpCircle className="h-3 w-3" /> {d.split("(")[0].trim()}
-                    </li>
-                  ))}
+                  {missingData.map((d, i) => <li key={i} className="text-orange-600">{d.split("(")[0].trim()}</li>)}
                 </ul>
               </div>
             </div>

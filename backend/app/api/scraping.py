@@ -20,21 +20,24 @@ _running_task: asyncio.Task | None = None
 
 def _run_full_pipeline(job_id: str):
     """Run the complete pipeline: collect + RNIC + insights."""
-    from app.services.scraping_service import run_scraping, _step_enrich_rnic, _step_generate_insights
+    from app.services.scraping_service import run_scraping, _step_enrich_rnic, _step_enrich_pappers, _step_generate_insights
     from app.models.insight import Insight
 
     db = SessionLocal()
     try:
-        # Step 1: Collect from API + generate initial insights
+        # Step 1: Collect from API
         run_scraping(db, job_id)
 
         # Step 2: Enrich with RNIC (local file)
         errors = []
-        db.query(Insight).delete()
-        db.commit()
         _step_enrich_rnic(db, errors)
 
-        # Step 3: Recalculate insights with RNIC data
+        # Step 3: Enrich with Pappers (dirigeants, CA)
+        _step_enrich_pappers(db, errors)
+
+        # Step 4: Recalculate insights with all enriched data
+        db.query(Insight).delete()
+        db.commit()
         _step_generate_insights(db)
 
         # Update job with final counts
@@ -42,9 +45,8 @@ def _run_full_pipeline(job_id: str):
         job = db.get(ScrapingJob, uuid.UUID(job_id))
         if job:
             job.nb_agences_scrappees = db.query(Agence).count()
-            rnic_count = db.query(Agence).filter(Agence.nb_lots_geres.isnot(None)).count()
             if errors:
-                job.erreurs = {"rnic_warnings": errors}
+                job.erreurs = {"warnings": errors}
             db.commit()
     finally:
         db.close()

@@ -54,6 +54,27 @@ def get_agence(agence_id: uuid.UUID, db: Session = Depends(get_db)):
     return agence
 
 
+@router.patch("/{agence_id}/commercial")
+def update_commercial_status(
+    agence_id: uuid.UUID,
+    data: dict,
+    db: Session = Depends(get_db),
+):
+    """Update commercial tracking fields (statut_commercial, notes_commercial)."""
+    agence = db.get(Agence, agence_id)
+    if not agence:
+        raise HTTPException(status_code=404, detail="Agence not found")
+
+    if "statut_commercial" in data:
+        agence.statut_commercial = data["statut_commercial"]
+    if "notes_commercial" in data:
+        agence.notes_commercial = data["notes_commercial"]
+
+    db.commit()
+    db.refresh(agence)
+    return agence
+
+
 @router.get("/{agence_id}/snapshots")
 def list_agence_snapshots(
     agence_id: uuid.UUID,
