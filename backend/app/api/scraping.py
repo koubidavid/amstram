@@ -54,7 +54,7 @@ def _run_full_pipeline(job_id: str):
     import logging
     logger = logging.getLogger(__name__)
 
-    from app.services.scraping_service import run_scraping, _step_enrich_rnic, _step_enrich_pappers, _step_generate_insights
+    from app.services.scraping_service import _step_collect, _step_enrich_rnic, _step_enrich_pappers, _step_generate_insights
     from app.services.job_scraper import scan_agency_jobs
     from app.models.insight import Insight
     from app.models.agence import Agence
@@ -72,11 +72,10 @@ def _run_full_pipeline(job_id: str):
 
         # Step 1: Collect from API
         _update_progress(db, job_id, 0, "Requêtes API recherche-entreprises.gouv.fr...")
-        run_scraping(db, job_id)
-        nb = db.query(Agence).count()
-        logger.info(f"[Pipeline] Step 1 done: {nb} agences collected")
-
         errors = []
+        new, updated = _step_collect(db, errors)
+        nb = db.query(Agence).count()
+        logger.warning(f"[Pipeline] Step 1 done: {nb} agences (new={new} updated={updated})")
 
         # Step 2: Enrich with RNIC
         _update_progress(db, job_id, 1, f"{nb} agences à enrichir avec le RNIC...")
@@ -114,11 +113,13 @@ def _run_full_pipeline(job_id: str):
                 "eta_minutes": 0,
                 "eta_display": "Terminé",
             }
+            job.statut = JobStatut.done
+            job.finished_at = datetime.now(timezone.utc)
             if errors:
                 job.erreurs = {"warnings": errors}
             db.commit()
 
-        logger.info(f"[Pipeline] Job {job_id} completed successfully")
+        logger.warning(f"[Pipeline] Job {job_id} completed successfully")
 
     except Exception as e:
         logger.error(f"[Pipeline] Job {job_id} failed: {e}")

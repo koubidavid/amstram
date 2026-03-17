@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
-import { Building2, Brain, AlertTriangle, Loader2, Play, RefreshCw, Calculator } from "lucide-react";
+import { Building2, Brain, AlertTriangle, Loader2, Play, RefreshCw, Calculator, Square } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,6 @@ function NextActionsWidget() {
   const [targets, setTargets] = useState<any[]>([]);
 
   useEffect(() => {
-    // Get top uncontacted targets
     api.getInsights("score_min=50&limit=5").then((d: any) => {
       setTargets(d.items.filter((i: any) => !i.agence_groupe || true).slice(0, 5));
     }).catch(console.error);
@@ -44,6 +43,31 @@ function NextActionsWidget() {
   );
 }
 
+function AnimatedNumber({ value, loading }: { value: number; loading: boolean }) {
+  const [display, setDisplay] = useState(0);
+  const prev = useRef(0);
+
+  useEffect(() => {
+    if (loading) return;
+    const from = prev.current;
+    const to = value;
+    if (from === to) { setDisplay(to); return; }
+    const duration = 800;
+    const start = performance.now();
+    const animate = (now: number) => {
+      const elapsed = now - start;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      setDisplay(Math.round(from + (to - from) * eased));
+      if (progress < 1) requestAnimationFrame(animate);
+      else prev.current = to;
+    };
+    requestAnimationFrame(animate);
+  }, [value, loading]);
+
+  return <>{loading ? "..." : display}</>;
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState({ totalAgences: 0, insightsTotal: 0, insightsHigh: 0, rnicEnriched: 0 });
   const [jobs, setJobs] = useState<ScrapingJob[]>([]);
@@ -53,6 +77,8 @@ export default function DashboardPage() {
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   const hasRunningJob = jobs.some((j) => j.statut === "running" || j.statut === "pending");
+  const runningJob = jobs.find((j) => j.statut === "running" || j.statut === "pending");
+  const prog = runningJob?.progression;
 
   const loadStats = useCallback(async () => {
     try {
@@ -102,6 +128,16 @@ export default function DashboardPage() {
     }
   };
 
+  const handleStop = async () => {
+    if (!runningJob) return;
+    try {
+      await api.stopScraping(runningJob.id);
+      loadJobs();
+    } catch (e) {
+      console.error("Failed to stop", e);
+    }
+  };
+
   const handleCalculateInsights = async () => {
     setCalculating(true);
     try {
@@ -113,6 +149,13 @@ export default function DashboardPage() {
   };
 
   const lastDoneJob = jobs.find((j) => j.statut === "done");
+  const steps = [
+    "Collecte agences",
+    "RNIC",
+    "Pappers",
+    "Offres d'emploi",
+    "Scores",
+  ];
 
   return (
     <div className="space-y-8">
@@ -139,15 +182,22 @@ export default function DashboardPage() {
                 </p>
               )}
             </div>
-            <Button onClick={handleScrape} disabled={scraping || hasRunningJob || calculating} size="lg" className="ml-4 shrink-0">
-              {scraping || hasRunningJob ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />En cours...</>
-              ) : lastDoneJob ? (
-                <><RefreshCw className="mr-2 h-4 w-4" />Relancer</>
-              ) : (
-                <><Play className="mr-2 h-4 w-4" />Scrapper</>
+            <div className="flex items-center gap-2 ml-4 shrink-0">
+              {hasRunningJob && (
+                <Button onClick={handleStop} variant="destructive" size="lg">
+                  <Square className="mr-2 h-4 w-4" />Stop
+                </Button>
               )}
-            </Button>
+              <Button onClick={handleScrape} disabled={scraping || hasRunningJob || calculating} size="lg">
+                {scraping || hasRunningJob ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" />En cours...</>
+                ) : lastDoneJob ? (
+                  <><RefreshCw className="mr-2 h-4 w-4" />Relancer</>
+                ) : (
+                  <><Play className="mr-2 h-4 w-4" />Scrapper</>
+                )}
+              </Button>
+            </div>
           </CardContent>
         </Card>
 
@@ -175,37 +225,109 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Progress banner */}
+      {/* Pipeline progress */}
       {hasRunningJob && (
-        <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950">
-          <CardContent className="flex items-center gap-3 pt-6">
-            <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-            <div>
-              <p className="font-medium text-blue-900 dark:text-blue-100">Pipeline en cours</p>
-              <p className="text-sm text-blue-700 dark:text-blue-300">
-                1. Collecte des agences (API INSEE) → 2. Enrichissement RNIC (lots réels) → 3. Calcul des insights
-              </p>
+        <Card className="border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950 dark:to-indigo-950 dark:border-blue-900 overflow-hidden">
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+                  <div className="absolute inset-0 h-6 w-6 animate-ping opacity-20 rounded-full bg-blue-600" />
+                </div>
+                <div>
+                  <p className="font-semibold text-blue-900 dark:text-blue-100">
+                    {prog?.step_label || "Démarrage du pipeline..."}
+                  </p>
+                  {prog?.detail && (
+                    <p className="text-sm text-blue-600 dark:text-blue-300">{prog.detail}</p>
+                  )}
+                </div>
+              </div>
+              {prog?.eta_display && (
+                <Badge variant="outline" className="text-blue-700 border-blue-300 bg-white/50 dark:bg-blue-900/50 font-mono text-sm px-3 py-1">
+                  {prog.eta_display} restant
+                </Badge>
+              )}
+            </div>
+
+            {/* Progress bar */}
+            <div className="w-full bg-blue-200/60 rounded-full h-3 dark:bg-blue-800/60 overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-indigo-500 h-3 rounded-full transition-all duration-1000 ease-out relative"
+                style={{ width: `${prog?.percent || 2}%` }}
+              >
+                <div className="absolute inset-0 bg-white/20 animate-pulse" />
+              </div>
+            </div>
+
+            {/* Step indicators */}
+            <div className="flex justify-between">
+              {steps.map((label, i) => {
+                const stepNum = prog?.step || 0;
+                const isDone = i < stepNum - 1;
+                const isCurrent = i === stepNum - 1;
+                return (
+                  <div key={i} className={`flex flex-col items-center gap-1 transition-all duration-500 ${
+                    isDone ? "text-green-600 dark:text-green-400" :
+                    isCurrent ? "text-blue-700 dark:text-blue-300 scale-110" : "text-blue-300 dark:text-blue-700"
+                  }`}>
+                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold transition-all duration-500 ${
+                      isDone ? "bg-green-500 text-white shadow-md shadow-green-500/30" :
+                      isCurrent ? "bg-blue-600 text-white shadow-lg shadow-blue-500/40 ring-2 ring-blue-300" :
+                      "bg-blue-200/80 dark:bg-blue-800/80"
+                    }`}>
+                      {isDone ? "✓" : i + 1}
+                    </span>
+                    <span className="text-[10px] md:text-xs font-medium hidden sm:block">{label}</span>
+                  </div>
+                );
+              })}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* KPIs */}
+      {/* KPIs with animated numbers */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title="Agences collectées" value={loading ? "..." : stats.totalAgences} icon={Building2} />
-        <KpiCard
-          title="Enrichies RNIC"
-          value={loading ? "..." : stats.rnicEnriched}
-          description="Avec nb lots réels vérifié"
-          icon={Building2}
-        />
-        <KpiCard title="Insights calculés" value={loading ? "..." : stats.insightsTotal} icon={Brain} />
-        <KpiCard
-          title="Cibles prioritaires"
-          value={loading ? "..." : stats.insightsHigh}
-          description="Score ≥ 50"
-          icon={AlertTriangle}
-        />
+        <Card className="transition-all duration-500">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Agences collectées</CardTitle>
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold"><AnimatedNumber value={stats.totalAgences} loading={loading} /></div>
+          </CardContent>
+        </Card>
+        <Card className="transition-all duration-500">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Enrichies RNIC</CardTitle>
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold"><AnimatedNumber value={stats.rnicEnriched} loading={loading} /></div>
+            <p className="text-xs text-muted-foreground">Avec nb lots réels vérifié</p>
+          </CardContent>
+        </Card>
+        <Card className="transition-all duration-500">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Insights calculés</CardTitle>
+            <Brain className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold"><AnimatedNumber value={stats.insightsTotal} loading={loading} /></div>
+          </CardContent>
+        </Card>
+        <Card className="transition-all duration-500">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Cibles prioritaires</CardTitle>
+            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold"><AnimatedNumber value={stats.insightsHigh} loading={loading} /></div>
+            <p className="text-xs text-muted-foreground">Score &ge; 50</p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Next actions widget */}
@@ -232,13 +354,16 @@ export default function DashboardPage() {
                     <Badge variant={job.statut === "done" ? "default" : job.statut === "failed" ? "destructive" : "secondary"}>
                       {job.statut === "done" ? "Terminé" : job.statut === "running" ? "En cours" : job.statut === "pending" ? "En attente" : "Erreur"}
                     </Badge>
+                    {job.progression?.step_label && job.statut !== "done" && (
+                      <span className="text-xs text-muted-foreground">{job.progression.step_label}</span>
+                    )}
                   </div>
                   <span className="text-muted-foreground">{new Date(job.created_at).toLocaleString("fr-FR")}</span>
                   <span className="font-medium">{job.nb_agences_scrappees} agences</span>
                   <span className="text-muted-foreground">
                     {job.started_at && job.finished_at
                       ? `${Math.round((new Date(job.finished_at).getTime() - new Date(job.started_at).getTime()) / 1000)}s`
-                      : "—"}
+                      : job.progression?.eta_display || "—"}
                   </span>
                 </div>
               ))}
