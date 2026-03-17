@@ -236,7 +236,7 @@ def _scan_jobs_with_logs(db, errors: list, job_id: str) -> int:
         .filter(Agence.siren.isnot(None))
         .filter(Agence.offres_emploi_detectees.is_(None))
         .order_by(Agence.nb_lots_geres.desc().nullslast())
-        .limit(50)
+        .limit(20)  # Reduced from 50 to avoid DuckDuckGo rate limits
         .all()
     )
 
@@ -247,18 +247,21 @@ def _scan_jobs_with_logs(db, errors: list, job_id: str) -> int:
     _log_activity(db, job_id, 3, f"{len(agences)} agences à scanner pour offres d'emploi...", "briefcase")
     found = 0
 
-    HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
-
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+    with httpx.Client(timeout=8.0, follow_redirects=True) as client:
         for i, agence in enumerate(agences):
             job_findings = []
 
-            if agence.site_web:
-                job_findings = _scan_agency_website(client, agence.site_web, agence.nom, errors)
+            try:
+                # Try agency website first (fast, no rate limit)
+                if agence.site_web:
+                    job_findings = _scan_agency_website(client, agence.site_web, agence.nom, errors)
 
-            if not job_findings:
-                job_findings = _search_duckduckgo(client, agence.nom, errors)
-                time.sleep(1.5)
+                # DuckDuckGo only for top agencies (slower, rate limited)
+                if not job_findings:
+                    job_findings = _search_duckduckgo(client, agence.nom, errors)
+                    time.sleep(2)  # Be gentle with DuckDuckGo
+            except Exception:
+                pass  # Skip on timeout, don't block the pipeline
 
             agence.offres_emploi_detectees = job_findings if job_findings else []
             if job_findings:
@@ -268,10 +271,10 @@ def _scan_jobs_with_logs(db, errors: list, job_id: str) -> int:
                               f"🔥 {agence.nom} recrute ! ({', '.join(roles[:2])})",
                               "fire", count=found)
 
-            # Progress every 10 agencies
-            if (i + 1) % 10 == 0:
+            # Progress every 5 agencies
+            if (i + 1) % 5 == 0:
                 _log_activity(db, job_id, 3,
-                              f"Scan en cours... {i+1}/{len(agences)} agences vérifiées, {found} recrutent",
+                              f"Scan en cours... {i+1}/{len(agences)} agences, {found} recrutent",
                               "briefcase")
 
     db.commit()

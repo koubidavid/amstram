@@ -65,53 +65,58 @@ def scan_agency_jobs(db: Session, errors: list, max_agencies: int = 50) -> int:
 
 
 def _search_duckduckgo(client: httpx.Client, agence_nom: str, errors: list) -> list[dict]:
-    """Search DuckDuckGo for job postings by this agency."""
+    """Search DuckDuckGo for job postings by this agency — single query."""
     findings = []
 
-    for role in TARGET_ROLES:
-        query = f'"{agence_nom}" recrutement {role}'
-        try:
-            resp = client.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                headers=HEADERS,
-            )
-            if resp.status_code != 200:
-                continue
+    # Single query instead of 6 separate ones
+    query = f'"{agence_nom}" recrutement gestionnaire locatif copropriété assistant'
+    try:
+        resp = client.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers=HEADERS,
+            timeout=8.0,
+        )
+        if resp.status_code != 200:
+            return []
 
-            html = resp.text
-            results = re.findall(
-                r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.+?)</a>',
-                html,
-            )
+        html = resp.text
+        results = re.findall(
+            r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.+?)</a>',
+            html,
+        )
 
-            for raw_url, raw_title in results[:3]:
-                title = re.sub(r"<[^>]+>", "", raw_title).strip()
-                # Extract real URL from DuckDuckGo redirect
-                url_match = re.search(r"uddg=([^&]+)", raw_url)
-                url = unquote(url_match.group(1)) if url_match else raw_url
+        for raw_url, raw_title in results[:5]:
+            title = re.sub(r"<[^>]+>", "", raw_title).strip()
+            url_match = re.search(r"uddg=([^&]+)", raw_url)
+            url = unquote(url_match.group(1)) if url_match else raw_url
 
-                # Check if the result is actually about a job posting
-                title_lower = title.lower()
-                is_job = any(kw in title_lower for kw in [
-                    "recrutement", "emploi", "offre", "poste", "recrute",
-                    "cdi", "cdd", "stage", "alternance", "careers",
-                    "gestionnaire", "assistant", "copropriété", "locatif",
-                ])
+            title_lower = title.lower()
+            is_job = any(kw in title_lower for kw in [
+                "recrutement", "emploi", "offre", "poste", "recrute",
+                "cdi", "cdd", "stage", "alternance", "careers",
+                "gestionnaire", "assistant", "copropriété", "locatif",
+            ])
 
-                # Check if it mentions the agency name
-                agence_in_title = agence_nom.lower().split()[0] in title_lower
+            agence_in_title = agence_nom.lower().split()[0] in title_lower
 
-                if is_job and agence_in_title:
-                    findings.append({
-                        "role": role,
-                        "title": title[:150],
-                        "url": url[:300],
-                        "source": "DuckDuckGo",
-                    })
+            if is_job and agence_in_title:
+                # Detect which role
+                role = "gestionnaire locatif"
+                for r in TARGET_ROLES:
+                    if r in title_lower:
+                        role = r
+                        break
 
-        except Exception:
-            continue
+                findings.append({
+                    "role": role,
+                    "title": title[:150],
+                    "url": url[:300],
+                    "source": "DuckDuckGo",
+                })
+
+    except Exception:
+        return []
 
     # Deduplicate by title
     seen = set()
