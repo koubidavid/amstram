@@ -302,10 +302,45 @@ def list_jobs(
 
 
 @router.get("/recherche-emploi")
-def recherche_emploi(db: Session = Depends(get_db)):
-    """Live Google/DuckDuckGo search. Lists all links, highlights agency matches."""
+def recherche_emploi(refresh: bool = False, db: Session = Depends(get_db)):
+    """Get cached job search results, or run a fresh search if refresh=true or no cache."""
     from app.services.job_scraper import live_search_jobs
-    return live_search_jobs(db)
+    from sqlalchemy import text
+
+    # Check cache
+    if not refresh:
+        try:
+            row = db.execute(text("SELECT data, updated_at FROM job_search_cache WHERE id = 1")).first()
+            if row:
+                import json
+                cached = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                cached["cached"] = True
+                cached["cached_at"] = row[1].isoformat() if row[1] else None
+                return cached
+        except Exception:
+            pass  # Table might not exist yet
+
+    # Run fresh search
+    results = live_search_jobs(db)
+    results["cached"] = False
+
+    # Save to cache
+    try:
+        import json
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS job_search_cache (
+                id INTEGER PRIMARY KEY, data JSON, updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        db.execute(text("DELETE FROM job_search_cache"))
+        db.execute(text(
+            "INSERT INTO job_search_cache (id, data, updated_at) VALUES (1, :data, NOW())"
+        ), {"data": json.dumps(results, ensure_ascii=False)})
+        db.commit()
+    except Exception:
+        pass
+
+    return results
 
 
 @router.get("/test-thread")

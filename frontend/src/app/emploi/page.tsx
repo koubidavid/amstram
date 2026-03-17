@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Search, ExternalLink, Building2, Briefcase } from "lucide-react";
+import { Loader2, Search, ExternalLink, Building2, Briefcase, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface JobLink {
@@ -22,10 +22,22 @@ export default function EmploiPage() {
   const [data, setData] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<string>("all_matched");
 
-  const handleSearch = async () => {
-    setLoading(true);
+  const loadCached = useCallback(async () => {
     try {
       const result = await api.rechercheEmploi();
+      if (result.total_links > 0) setData(result);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  // Load cached results on mount
+  useEffect(() => { loadCached(); }, [loadCached]);
+
+  const handleSearch = async (refresh = false) => {
+    setLoading(true);
+    try {
+      const result = await api.rechercheEmploi(refresh);
       setData(result);
     } catch (e) {
       console.error(e);
@@ -105,16 +117,33 @@ export default function EmploiPage() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Recherche offres d&apos;emploi</h2>
           <p className="text-muted-foreground">
-            Scan DuckDuckGo + France Travail pour trouver les agences qui recrutent
+            {data?.cached && data?.cached_at
+              ? `Dernière recherche : ${new Date(data.cached_at).toLocaleString("fr-FR")} via ${data.search_engine || "DuckDuckGo"}`
+              : data
+              ? `Recherche fraîche via ${data.search_engine || "DuckDuckGo"}`
+              : "Scan Google / DuckDuckGo pour trouver les agences qui recrutent"}
           </p>
         </div>
-        <Button onClick={handleSearch} disabled={loading} size="lg">
-          {loading ? (
-            <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Recherche en cours...</>
-          ) : (
-            <><Search className="mr-2 h-4 w-4" />Lancer la recherche</>
+        <div className="flex gap-2">
+          {data && (
+            <Button onClick={() => handleSearch(true)} disabled={loading} variant="outline" size="lg">
+              {loading ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Rafraîchissement...</>
+              ) : (
+                <><RefreshCw className="mr-2 h-4 w-4" />Rafraîchir</>
+              )}
+            </Button>
           )}
-        </Button>
+          {!data && (
+            <Button onClick={() => handleSearch(true)} disabled={loading} size="lg">
+              {loading ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Recherche en cours...</>
+              ) : (
+                <><Search className="mr-2 h-4 w-4" />Lancer la recherche</>
+              )}
+            </Button>
+          )}
+        </div>
       </div>
 
       {data && (

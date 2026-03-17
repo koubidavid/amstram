@@ -29,7 +29,7 @@ export const api = {
   logAppel: (id: string, data: { resume: string; resultat: string; nouveau_statut?: string }) =>
     fetchApi<any>(`/api/agences/${id}/appel`, { method: "POST", body: JSON.stringify(data) }),
   getKanban: () => fetchApi<any>("/api/agences/kanban"),
-  rechercheEmploi: () => fetchApi<any>("/api/scraping/recherche-emploi"),
+  rechercheEmploi: (refresh = false) => fetchApi<any>(`/api/scraping/recherche-emploi${refresh ? "?refresh=true" : ""}`),
   deleteCron: (id: string) => fetchApi<void>(`/api/scraping/cron/${id}`, { method: "DELETE" }),
   exportUrl: (entity: string, format: string) => `${API_BASE}/api/export/${entity}/${format}`,
 };
