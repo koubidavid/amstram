@@ -79,19 +79,67 @@ export default function ScrapingPage() {
         </Button>
       </div>
 
-      {hasRunningJob && (
-        <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950">
-          <CardContent className="flex items-center gap-3 pt-6">
-            <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-            <div>
-              <p className="font-medium text-blue-900 dark:text-blue-100">Pipeline en cours</p>
-              <p className="text-sm text-blue-700 dark:text-blue-300">
-                1. Collecte des agences (API INSEE) → 2. Enrichissement RNIC (lots réels) → 3. Calcul des insights
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {hasRunningJob && (() => {
+        const runningJob = jobs.find((j) => j.statut === "running" || j.statut === "pending");
+        const prog = runningJob?.progression;
+        const steps = [
+          "Collecte agences (API INSEE)",
+          "Enrichissement RNIC (lots)",
+          "Enrichissement Pappers (CA, dirigeants)",
+          "Détection offres d'emploi",
+          "Calcul des scores",
+        ];
+        return (
+          <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950">
+            <CardContent className="pt-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                  <div>
+                    <p className="font-medium text-blue-900 dark:text-blue-100">
+                      {prog?.step_label || "Démarrage du pipeline..."}
+                    </p>
+                    {prog?.detail && (
+                      <p className="text-sm text-blue-700 dark:text-blue-300">{prog.detail}</p>
+                    )}
+                  </div>
+                </div>
+                {prog?.eta_display && (
+                  <Badge variant="outline" className="text-blue-700 border-blue-300">
+                    {prog.eta_display} restant
+                  </Badge>
+                )}
+              </div>
+
+              {/* Progress bar */}
+              <div className="w-full bg-blue-200 rounded-full h-2.5 dark:bg-blue-800">
+                <div
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-500"
+                  style={{ width: `${prog?.percent || 2}%` }}
+                />
+              </div>
+
+              {/* Step indicators */}
+              <div className="flex justify-between text-xs text-blue-600 dark:text-blue-400">
+                {steps.map((label, i) => (
+                  <div key={i} className={`flex items-center gap-1 ${
+                    prog && i < (prog.step || 1) - 1 ? "text-green-600 dark:text-green-400" :
+                    prog && i === (prog.step || 1) - 1 ? "font-bold" : "opacity-50"
+                  }`}>
+                    <span className={`inline-block w-4 h-4 rounded-full text-center leading-4 text-[10px] ${
+                      prog && i < (prog.step || 1) - 1 ? "bg-green-500 text-white" :
+                      prog && i === (prog.step || 1) - 1 ? "bg-blue-600 text-white" : "bg-blue-200 dark:bg-blue-700"
+                    }`}>
+                      {prog && i < (prog.step || 1) - 1 ? "✓" : i + 1}
+                    </span>
+                    <span className="hidden md:inline">{label}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Stats from last completed job */}
       {lastDoneJob && !hasRunningJob && (

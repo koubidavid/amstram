@@ -7,6 +7,20 @@ from app.models import *  # noqa: F401,F403 — import all models so Base.metada
 # Create all tables on startup
 Base.metadata.create_all(bind=engine)
 
+# Safe migration: add missing columns (no Alembic)
+with engine.connect() as conn:
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(engine)
+    for table_name, columns_to_add in [
+        ("scraping_jobs", [("progression", "JSON")]),
+    ]:
+        if table_name in inspector.get_table_names():
+            existing = {c["name"] for c in inspector.get_columns(table_name)}
+            for col_name, col_type in columns_to_add:
+                if col_name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+
 app = FastAPI(title="Amstram — Opportunity Finder API", version="1.0.0")
 
 app.add_middleware(

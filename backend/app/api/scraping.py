@@ -1,5 +1,5 @@
 """Scraping API — one button does everything."""
-import asyncio
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -14,54 +14,126 @@ from app.schemas.scraping_job import ScrapingJobList, ScrapingJobRead
 
 router = APIRouter(prefix="/api/scraping", tags=["scraping"])
 
-# Track running task so we can check status
-_running_task: asyncio.Task | None = None
+# Track running thread
+_running_thread: threading.Thread | None = None
+
+
+PIPELINE_STEPS = [
+    {"key": "collect",   "label": "Collecte des agences (API INSEE)",    "estimate_min": 3},
+    {"key": "rnic",      "label": "Enrichissement RNIC (lots gérés)",    "estimate_min": 1},
+    {"key": "pappers",   "label": "Enrichissement Pappers (CA, dirigeants)", "estimate_min": 2},
+    {"key": "jobs",      "label": "Détection offres d'emploi (DuckDuckGo + sites)", "estimate_min": 3},
+    {"key": "insights",  "label": "Calcul des scores et insights",      "estimate_min": 0.5},
+]
+
+
+def _update_progress(db, job_id: str, step_index: int, detail: str = ""):
+    """Update job progression with current step and ETA."""
+    import time
+    job = db.get(ScrapingJob, uuid.UUID(job_id))
+    if not job:
+        return
+
+    total_steps = len(PIPELINE_STEPS)
+    current = PIPELINE_STEPS[step_index]
+
+    # Estimate remaining time
+    remaining_min = sum(s["estimate_min"] for s in PIPELINE_STEPS[step_index:])
+
+    job.progression = {
+        "step": step_index + 1,
+        "total_steps": total_steps,
+        "step_key": current["key"],
+        "step_label": current["label"],
+        "detail": detail,
+        "percent": round((step_index / total_steps) * 100),
+        "eta_minutes": round(remaining_min, 1),
+        "eta_display": f"~{int(remaining_min)} min" if remaining_min >= 1 else "< 1 min",
+    }
+    db.commit()
 
 
 def _run_full_pipeline(job_id: str):
-    """Run the complete pipeline: collect + RNIC + insights."""
+    """Run the complete pipeline: collect + RNIC + Pappers + jobs + insights."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     from app.services.scraping_service import run_scraping, _step_enrich_rnic, _step_enrich_pappers, _step_generate_insights
     from app.services.job_scraper import scan_agency_jobs
     from app.models.insight import Insight
+    from app.models.agence import Agence
 
     db = SessionLocal()
     try:
+        logger.info(f"[Pipeline] Starting job {job_id}")
+
         # Step 1: Collect from API
+        _update_progress(db, job_id, 0, "Requêtes API recherche-entreprises.gouv.fr...")
         run_scraping(db, job_id)
+        nb = db.query(Agence).count()
+        logger.info(f"[Pipeline] Step 1 done: {nb} agences collected")
 
-        # Step 2: Enrich with RNIC (local file)
         errors = []
+
+        # Step 2: Enrich with RNIC
+        _update_progress(db, job_id, 1, f"{nb} agences à enrichir avec le RNIC...")
         _step_enrich_rnic(db, errors)
+        logger.info(f"[Pipeline] Step 2 done: RNIC enrichment")
 
-        # Step 3: Enrich with Pappers (dirigeants, CA)
+        # Step 3: Enrich with Pappers
+        _update_progress(db, job_id, 2, "Récupération dirigeants et CA via Pappers...")
         _step_enrich_pappers(db, errors)
+        logger.info(f"[Pipeline] Step 3 done: Pappers enrichment")
 
-        # Step 4: Scan for job postings (DuckDuckGo + agency websites)
-        # Only scan top 30 scored agencies to avoid rate limiting
-        scan_agency_jobs(db, errors)
+        # Step 4: Scan for job postings
+        _update_progress(db, job_id, 3, "Scan DuckDuckGo + sites agences pour offres d'emploi...")
+        found = scan_agency_jobs(db, errors)
+        logger.info(f"[Pipeline] Step 4 done: {found} agencies with job postings")
 
-        # Step 5: Recalculate insights with all enriched data
+        # Step 5: Recalculate insights
+        _update_progress(db, job_id, 4, "Recalcul des scores avec toutes les données...")
         db.query(Insight).delete()
         db.commit()
         _step_generate_insights(db)
+        logger.info(f"[Pipeline] Step 5 done: insights generated")
 
-        # Update job with final counts
-        from app.models.agence import Agence
+        # Finalize
         job = db.get(ScrapingJob, uuid.UUID(job_id))
         if job:
             job.nb_agences_scrappees = db.query(Agence).count()
+            job.progression = {
+                "step": len(PIPELINE_STEPS),
+                "total_steps": len(PIPELINE_STEPS),
+                "step_key": "done",
+                "step_label": "Terminé",
+                "detail": f"{job.nb_agences_scrappees} agences, {found} avec offres d'emploi",
+                "percent": 100,
+                "eta_minutes": 0,
+                "eta_display": "Terminé",
+            }
             if errors:
                 job.erreurs = {"warnings": errors}
+            db.commit()
+
+        logger.info(f"[Pipeline] Job {job_id} completed successfully")
+
+    except Exception as e:
+        logger.error(f"[Pipeline] Job {job_id} failed: {e}")
+        job = db.get(ScrapingJob, uuid.UUID(job_id))
+        if job:
+            job.statut = JobStatut.failed
+            job.finished_at = datetime.now(timezone.utc)
+            job.erreurs = {"error": str(e)}
             db.commit()
     finally:
         db.close()
 
 
 @router.post("/lancer", response_model=ScrapingJobRead)
-async def lancer_scraping(db: Session = Depends(get_db)):
-    """Launch full scraping pipeline in background.
+def lancer_scraping(db: Session = Depends(get_db)):
+    """Launch full scraping pipeline in background thread.
     Collects agencies + enriches with RNIC + computes insights."""
-    global _running_task
+    global _running_thread
 
     job = ScrapingJob(type=JobType.manuel, statut=JobStatut.pending)
     db.add(job)
@@ -70,9 +142,11 @@ async def lancer_scraping(db: Session = Depends(get_db)):
 
     job_id = str(job.id)
 
-    # Run in background via asyncio + thread executor
-    loop = asyncio.get_event_loop()
-    _running_task = loop.run_in_executor(None, _run_full_pipeline, job_id)
+    # Run in a daemon thread — more reliable than asyncio executor on Render
+    _running_thread = threading.Thread(
+        target=_run_full_pipeline, args=(job_id,), daemon=True
+    )
+    _running_thread.start()
 
     return job
 

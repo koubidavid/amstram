@@ -33,4 +33,5 @@ class ScrapingJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     nb_agences_scrappees: Mapped[int] = mapped_column(Integer, default=0)
+    progression: Mapped[dict | None] = mapped_column(JSON)
     erreurs: Mapped[dict | None] = mapped_column(JSON)

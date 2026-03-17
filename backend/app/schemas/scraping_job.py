@@ -20,6 +20,7 @@ class ScrapingJobRead(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     nb_agences_scrappees: int
+    progression: dict | None = None
     erreurs: dict | None = None
 
     class Config:

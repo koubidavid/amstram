@@ -77,5 +77,15 @@ export interface ScrapingJob {
   started_at: string | null;
   finished_at: string | null;
   nb_agences_scrappees: number;
+  progression: {
+    step: number;
+    total_steps: number;
+    step_key: string;
+    step_label: string;
+    detail: string;
+    percent: number;
+    eta_minutes: number;
+    eta_display: string;
+  } | null;
   erreurs: Record<string, string> | null;
 }
